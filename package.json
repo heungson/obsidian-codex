@@ -1,0 +1,25 @@
+{
+  "name": "obsidian-codex",
+  "version": "0.3.1",
+  "private": true,
+  "description": "Native Obsidian desktop chat for Codex and Claude Code CLI",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "bundle": "npm run build && node scripts/bundle.mjs",
+    "pretest": "npm run build"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.312",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "happy-dom": "^21.0.4",
+    "obsidian": "^1.8.7",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
