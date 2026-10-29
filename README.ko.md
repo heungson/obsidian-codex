@@ -10,7 +10,7 @@
 
 # v0.2.0: Claude Code CLI 지원
 
-입력창 아래 **모델 · 추론 강도** 버튼의 Provider에서 Codex CLI와 Claude Code CLI를 선택할 수 있습니다. 명령 팔레트의 **Codex: Use Claude Code CLI / Use Codex CLI**도 지원합니다. 각 공급자의 모델·권한·마지막 대화는 따로 보관하고, 전환 시 작성 중인 입력과 첨부는 지웁니다. 기존 Claude 로그인과 설치된 CLI를 사용하며 자격 증명을 읽거나 저장하지 않습니다.
+입력창 아래 **모델 · 추론 강도** 버튼을 열고 상단 Codex/Claude 탭에서 공급자를 선택할 수 있습니다. 체크 표시가 있는 모델 목록과 하단 추론 강도 버튼에서 설정을 바로 변경합니다. 방향키로 이동하고 Enter 또는 Space로 모델·공급자를 선택할 수 있습니다. 명령 팔레트의 **Codex: Use Claude Code CLI / Use Codex CLI**도 지원합니다. 각 공급자의 모델·권한·마지막 대화는 따로 보관하고, 전환 시 작성 중인 입력과 첨부는 지웁니다. 기존 Claude 로그인과 설치된 CLI를 사용하며 자격 증명을 읽거나 저장하지 않습니다.
 
 **업그레이드는 ZIP 폴더 전체를 복사하세요.** `main.js`, `claude-sdk.cjs`, `manifest.json`, `styles.css`, `THIRD_PARTY_NOTICES.md`, `LICENSE`를 함께 설치해야 합니다. 런타임 npm 설치와 CLI 자동 다운로드는 없습니다. CLI 자체는 별도 설치가 필요합니다.
 
@@ -140,7 +140,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check       # TypeScript + protocol/session tests + production bundle
 npm run dev         # rebuild on source changes
-npm run bundle      # dist/obsidian-codex-0.3.1.zip
+npm run bundle      # dist/obsidian-codex-0.4.0.zip
 ```
 
 - `src/protocol.ts`: JSONL 전송, 프로세스 수명, 요청 ID·타임아웃·서버 요청, 실행 파일 발견, 권한 매핑.

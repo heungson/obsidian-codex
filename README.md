@@ -11,10 +11,10 @@ This unofficial community integration is independent of OpenAI, Anthropic, and O
 Requires Obsidian desktop 1.8+ and at least one installed, authenticated CLI. Tested with **Codex CLI 0.164.0**, **Claude Code 2.1.312**, and the pinned **Claude Agent SDK 0.3.312**. Codex app-server uses experimental APIs; CLI/SDK changes may require a compatible plugin update.
 
 1. Check `codex --version` or `claude --version` in a terminal. Complete your provider's normal terminal login if needed. No API key or password is entered in the plugin.
-2. Extract `obsidian-codex-0.3.1.zip` and copy its `obsidian-codex` folder into `<vault>/.obsidian/plugins/`. Replace the previous plugin files when upgrading. **Include `claude-sdk.cjs` and `THIRD_PARTY_NOTICES.md`**, not just the old three-file Codex build.
+2. Extract `obsidian-codex-0.4.0.zip` and copy its `obsidian-codex` folder into `<vault>/.obsidian/plugins/`. Replace the previous plugin files when upgrading. **Include `claude-sdk.cjs` and `THIRD_PARTY_NOTICES.md`**, not just the old three-file Codex build.
 3. Restart Obsidian and enable **Settings → Community plugins → Codex**. The existing plugin ID/name is retained for upgrades and command-palette compatibility.
-4. Open **Codex: Open chat**, then click the **model · effort** button below the prompt and choose **Provider → Codex CLI / Claude Code CLI**. Settings also offer a provider selector. Keyboard users can run **Codex: Use Claude Code CLI** or **Codex: Use Codex CLI**.
-5. The **model · effort** picker contains model and reasoning choices. The adjacent **Work/Plan · permissions** picker contains mode and permissions. Press Escape to close a picker. Then send a prompt. Read-only is the default for a newly selected provider.
+4. Open **Codex: Open chat**, then click the **model · effort** button below the prompt and choose the **Codex** or **Claude** tab. Settings also offer a provider selector. Keyboard users can run **Codex: Use Claude Code CLI** or **Codex: Use Codex CLI**.
+5. The **model · effort** picker has compact Codex/Claude tabs, a checked model list, and reasoning buttons. Model and effort changes apply immediately; arrow keys navigate the choices, and Enter or Space selects a model or provider. The adjacent **Work/Plan · permissions** picker contains mode and permissions. Press Escape to close a picker. Then send a prompt. Read-only is the default for a newly selected provider.
 
 Each provider keeps its own model, effort, permission mode, and last conversation. Switching clears the composer and attachments and restores the selected provider's history. Finish or stop a running turn before switching. Existing Codex settings/history remain available.
 
@@ -32,6 +32,8 @@ node scripts/install.mjs "/absolute/path/to/your/vault"
 The installer copies the runtime files and license/notices, backs up earlier plugin files outside the plugins directory, and leaves enablement and other plugins unchanged. Use a disposable vault for development. The release includes all JavaScript runtime dependencies; it needs no npm install inside your vault. **The CLIs themselves are not bundled.**
 
 ## Context and everyday use
+
+The header uses a pencil-in-square icon for **New conversation** and a clock-arrow icon for **Conversation history**. Hover for labels; both remain keyboard-accessible.
 
 - **+ → Attach active note** attaches a snapshot of the active note, including unsaved editor text.
 - **Select a passage → Attach selection**: a direct button appears beside `+` while note text is selected. It supports source text, Live Preview rendered blocks, and reading view. In the editor, you can also right-click → **Attach selection to chat**, use **+ → Attach selection**, or run **Codex: Attach selection to chat**. You can assign that command a shortcut under **Settings → Hotkeys**.
@@ -122,7 +124,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check          # typecheck, production builds, transport/adapter/view tests
 npm run dev            # watch main + SDK runtime
-npm run bundle         # dist/obsidian-codex-0.3.1.zip
+npm run bundle         # dist/obsidian-codex-0.4.0.zip
 ```
 
 `npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The shipped SDK is a JavaScript-only CJS sidecar with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.

@@ -15,6 +15,7 @@ import {
   TFile,
   WorkspaceLeaf,
   normalizePath,
+  setIcon,
 } from "obsidian";
 import { basename, relative, resolve, isAbsolute, join } from "node:path";
 import {
@@ -893,16 +894,31 @@ class CodexView extends ItemView {
     const header = root.createDiv({ cls: "codex-header" });
     this.title = header.createEl("strong", { text: "New conversation" });
     const actions = header.createDiv({ cls: "codex-actions" });
-    button(actions, "New", () => void this.guard(() => this.newChat()));
-    button(
+    const newButton = button(
       actions,
-      "History",
+      "",
+      () => void this.guard(() => this.newChat()),
+      "New conversation",
+    );
+    const historyButton = button(
+      actions,
+      "",
       () =>
         void this.guard(async () => {
           await this.plugin.client.connect();
           new HistoryModal(this.app, this).open();
         }),
+      "Conversation history",
     );
+    for (const [control, icon, label] of [
+      [newButton, "square-pen", "New conversation"],
+      [historyButton, "history", "Conversation history"],
+    ] as const) {
+      control.addClass("codex-header-icon");
+      control.setAttribute("aria-label", label);
+      setIcon(control, icon);
+      control.querySelector("svg")?.setAttribute("aria-hidden", "true");
+    }
     button(actions, "⋯", () => this.menu(), "Conversation actions");
     this.status = root.createDiv({
       cls: "codex-status",
@@ -1156,6 +1172,8 @@ class CodexView extends ItemView {
         (name || "CLI default") +
         " · " +
         effort;
+    if (this.modelButton?.getAttribute("aria-expanded") === "true")
+      this.modelButton.removeAttribute("title");
     this.modeButton?.setText(
       (s.plan ? "Plan" : "Work") + " · " + this.accessLabel(),
     );
@@ -1184,6 +1202,7 @@ class CodexView extends ItemView {
     }
     const picker = new ComposerPopover(anchor, label, this.contentEl, () => {
       if (this.picker === picker) this.picker = undefined;
+      if (anchor === this.modelButton) this.refreshControlLabels();
     });
     this.picker = picker;
     return picker;
@@ -1193,70 +1212,243 @@ class CodexView extends ItemView {
     field.createEl("span", { text: label });
     return field.createEl("select", { attr: { "aria-label": label } });
   }
+  private pickerKeyboard(
+    group: HTMLElement,
+    selector: string,
+    activateOnArrow = false,
+    vertical = false,
+  ) {
+    group.addEventListener("keydown", (event) => {
+      const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
+        selector,
+      );
+      if (!target || !group.contains(target)) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        target.click();
+        return;
+      }
+      const backward =
+        event.key === "ArrowUp" || (!vertical && event.key === "ArrowLeft");
+      const forward =
+        event.key === "ArrowDown" || (!vertical && event.key === "ArrowRight");
+      if (!backward && !forward && event.key !== "Home" && event.key !== "End")
+        return;
+      const choices = Array.from(
+        group.querySelectorAll<HTMLButtonElement>(selector),
+      ).filter((b) => !b.disabled);
+      if (!choices.length) return;
+      event.preventDefault();
+      const current = choices.indexOf(target);
+      const index =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? choices.length - 1
+            : (current + (backward ? -1 : 1) + choices.length) % choices.length;
+      for (const choice of choices) choice.tabIndex = -1;
+      choices[index].tabIndex = 0;
+      choices[index].focus();
+      if (activateOnArrow) choices[index].click();
+    });
+  }
+  private async switchPickerProvider(
+    provider: Provider,
+    picker: ComposerPopover,
+  ) {
+    const document = picker.content.ownerDocument;
+    let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+    };
+    document.addEventListener("pointerdown", cancel, true);
+    document.addEventListener("keydown", cancel, true);
+    picker.close(false);
+    try {
+      await this.changeProvider(provider);
+    } finally {
+      document.removeEventListener("pointerdown", cancel, true);
+      document.removeEventListener("keydown", cancel, true);
+    }
+    if (
+      !cancelled &&
+      !this.closed &&
+      this.plugin.settings.provider === provider &&
+      this.plugin.client.ready &&
+      !this.turnId &&
+      !this.starting &&
+      !this.operation
+    )
+      this.openModelPicker();
+  }
   private openModelPicker() {
     const picker = this.beginPicker(this.modelButton, "Model and reasoning");
     if (!picker) return;
+    picker.content.addClass("codex-model-picker");
+    this.modelButton.removeAttribute("title");
     const s = this.plugin.settings;
-    picker.content.createEl("div", {
-      text: "Model & reasoning",
-      cls: "codex-picker-title",
+    const providerAtOpen = s.provider;
+    const current = () =>
+      this.picker === picker &&
+      !this.closed &&
+      !this.turnId &&
+      !this.starting &&
+      !this.operation &&
+      s.provider === providerAtOpen;
+    const tabs = picker.content.createDiv({
+      cls: "codex-provider-tabs",
+      attr: { role: "tablist", "aria-label": "Provider" },
     });
-    const provider = this.pickerSelect(picker.content, "Provider");
-    provider.createEl("option", { text: "Codex CLI", value: "codex" });
-    provider.createEl("option", { text: "Claude Code CLI", value: "claude" });
-    provider.value = s.provider;
-    provider.addEventListener("change", () => {
-      const value = provider.value as Provider;
-      picker.close(false);
-      void this.changeProvider(value).then(() => this.modelButton.focus());
+    const panelId = picker.content.id + "-models";
+    for (const [value, name] of [
+      ["codex", "Codex"],
+      ["claude", "Claude"],
+    ] as const) {
+      const tab = button(tabs, name, () => {
+        if (current() && value !== s.provider)
+          void this.switchPickerProvider(value, picker);
+      });
+      tab.addClass("codex-provider-tab");
+      tab.id = picker.content.id + "-" + value;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(value === s.provider));
+      tab.setAttribute("aria-controls", panelId);
+      tab.tabIndex = value === s.provider ? 0 : -1;
+    }
+    this.pickerKeyboard(tabs, '[role="tab"]');
+    const panel = picker.content.createDiv({
+      cls: "codex-model-panel",
+      attr: {
+        id: panelId,
+        role: "tabpanel",
+        "aria-labelledby": picker.content.id + "-" + s.provider,
+      },
     });
-    const model = this.pickerSelect(picker.content, "Model");
-    if (!this.models.length)
-      model.createEl("option", {
-        text: s.model || "CLI default",
-        value: s.model,
-      });
-    for (const m of this.models)
-      model.createEl("option", {
-        text: m.displayName ?? m.model,
-        value: m.model,
-      });
-    model.value = s.model;
-    const effort = this.pickerSelect(picker.content, "Reasoning effort");
-    const fillEffort = () => {
-      effort.empty();
-      for (const e of this.models.find((m) => m.model === s.model)
-        ?.supportedReasoningEfforts ?? [{ reasoningEffort: s.effort }])
-        effort.createEl("option", {
-          text: e.reasoningEffort
-            ? e.reasoningEffort[0].toUpperCase() + e.reasoningEffort.slice(1)
-            : "Default",
-          value: e.reasoningEffort,
-        });
-      effort.value = s.effort;
+    const list = panel.createDiv({
+      cls: "codex-model-list",
+      attr: { role: "listbox", "aria-label": "Model" },
+    });
+    const footer = panel.createDiv({ cls: "codex-reasoning-footer" });
+    footer.createSpan({ text: "Reasoning", cls: "codex-reasoning-label" });
+    const efforts = footer.createDiv({
+      cls: "codex-effort-choices",
+      attr: { role: "radiogroup", "aria-label": "Reasoning effort" },
+    });
+    const modelButtons: Array<{
+      button: HTMLButtonElement;
+      model: Json;
+      mark: HTMLElement;
+    }> = [];
+    const refreshRows = () => {
+      for (const row of modelButtons) {
+        const selected = row.model.model === s.model;
+        row.button.setAttribute("aria-selected", String(selected));
+        row.button.tabIndex = selected ? 0 : -1;
+        row.mark.setText(selected ? "✓" : "");
+      }
     };
+    const fillEffort = () => {
+      efforts.empty();
+      const options =
+        this.models.find((m) => m.model === s.model)
+          ?.supportedReasoningEfforts ?? [];
+      if (!options.length) {
+        efforts.createSpan({ text: "Not reported", cls: "codex-effort-empty" });
+        return;
+      }
+      const chips: HTMLButtonElement[] = [];
+      for (const option of options) {
+        const value = option.reasoningEffort;
+        const name = value
+          ? value[0].toUpperCase() + value.slice(1)
+          : "Default";
+        const chip = button(efforts, name, () => {
+          if (!current()) return;
+          s.effort = value;
+          for (const choice of chips) {
+            const selected = choice.dataset.effort === value;
+            choice.setAttribute("aria-checked", String(selected));
+            choice.tabIndex = selected ? 0 : -1;
+          }
+          chip.focus();
+          this.refreshControlLabels();
+          void this.plugin.save();
+        });
+        chip.addClass("codex-effort-chip");
+        chip.dataset.effort = value;
+        chip.setAttribute("role", "radio");
+        chip.setAttribute("aria-checked", String(value === s.effort));
+        chip.tabIndex = value === s.effort ? 0 : -1;
+        chips.push(chip);
+      }
+      if (!chips.some((chip) => chip.tabIndex === 0)) chips[0].tabIndex = 0;
+    };
+    const rows = [...this.models];
+    if (s.model && !rows.some((m) => m.model === s.model))
+      rows.unshift({ model: s.model, displayName: s.model, currentOnly: true });
+    for (const model of rows) {
+      let row!: HTMLButtonElement;
+      row = button(list, "", () => {
+        if (!current()) return;
+        if (!model.currentOnly) {
+          s.model = model.model;
+          const options = model.supportedReasoningEfforts ?? [];
+          if (
+            !options.some((option: Json) => option.reasoningEffort === s.effort)
+          )
+            s.effort = options.some(
+              (option: Json) =>
+                option.reasoningEffort === model.defaultReasoningEffort,
+            )
+              ? model.defaultReasoningEffort
+              : (options[0]?.reasoningEffort ?? "");
+        }
+        refreshRows();
+        fillEffort();
+        this.refreshControlLabels();
+        picker.show(row, 280);
+        void this.plugin.save();
+      });
+      row.addClass("codex-model-option");
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-label", model.displayName ?? model.model);
+      row.dataset.model = model.model;
+      if (model.description)
+        row.setAttribute("aria-description", model.description);
+      else if (model.currentOnly)
+        row.setAttribute(
+          "aria-description",
+          "Current saved model; metadata was not returned by the provider.",
+        );
+      row.createSpan({
+        text: model.displayName ?? model.model,
+        cls: "codex-model-name",
+      });
+      const mark = row.createSpan({
+        cls: "codex-model-check",
+        attr: { "aria-hidden": "true" },
+      });
+      modelButtons.push({ button: row, model, mark });
+    }
+    if (!rows.length)
+      list.createDiv({
+        text: "No models returned by this provider.",
+        cls: "codex-model-empty",
+      });
+    refreshRows();
+    if (
+      modelButtons.length &&
+      !modelButtons.some((row) => row.button.tabIndex === 0)
+    )
+      modelButtons[0].button.tabIndex = 0;
+    this.pickerKeyboard(list, '[role="option"]', false, true);
     fillEffort();
-    model.addEventListener("change", () => {
-      if (this.turnId || this.starting || this.operation) return;
-      s.model = model.value;
-      const selected = this.models.find((m) => m.model === s.model);
-      if (
-        !selected?.supportedReasoningEfforts?.some(
-          (e: Json) => e.reasoningEffort === s.effort,
-        )
-      )
-        s.effort = selected?.defaultReasoningEffort ?? "";
-      fillEffort();
-      this.refreshControlLabels();
-      void this.plugin.save();
-    });
-    effort.addEventListener("change", () => {
-      if (this.turnId || this.starting || this.operation) return;
-      s.effort = effort.value;
-      this.refreshControlLabels();
-      void this.plugin.save();
-    });
-    picker.show();
+    this.pickerKeyboard(efforts, '[role="radio"]', true);
+    picker.show(
+      modelButtons.find((row) => row.model.model === s.model)?.button ??
+        modelButtons[0]?.button,
+      280,
+    );
   }
   private openModePicker() {
     const picker = this.beginPicker(this.modeButton, "Mode and permissions");

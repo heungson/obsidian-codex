@@ -169,7 +169,7 @@ async function harness(settings: any = {}) {
 }
 function click(text: string, root: ParentNode = document) {
   const button = [...root.querySelectorAll("button")].find(
-    (b) => b.textContent === text,
+    (b) => b.textContent === text || b.getAttribute("aria-label") === text,
   ) as HTMLButtonElement | undefined;
   assert.ok(button, `Missing button ${text}`);
   button.click();
@@ -189,7 +189,8 @@ test("compact pickers retain choices, dismiss with keyboard/outside focus, and c
   assert.equal(document.querySelectorAll(".codex-options select").length, 0);
   model.click();
   assert.equal(model.getAttribute("aria-expanded"), "true");
-  assert.equal(document.activeElement?.getAttribute("aria-label"), "Provider");
+  assert.equal(document.activeElement?.getAttribute("role"), "option");
+  assert.equal(document.activeElement?.getAttribute("aria-selected"), "true");
   document.activeElement!.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
   );
@@ -331,7 +332,7 @@ test("history searches working folder and resumes selected paginated conversatio
         nextCursor: "older",
       };
   };
-  click("History");
+  click("Conversation history");
   await flush();
   assert.equal(
     h.client.calls.find((c) => c.method === "thread/list")!.params.cwd,
@@ -888,4 +889,302 @@ test("editor context menu preserves explicit source selection and original label
   root
     .querySelector(".cm-content")!
     .dispatchEvent(new Event("pointerdown", { bubbles: true }));
+});
+
+test("model picker uses actual model rows and effort radios, preserves selection, handles keyboard navigation and unsupported effort fallback", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.models = [
+    {
+      model: "gpt-6.1-sol",
+      displayName: "GPT-6.1 Sol",
+      description: "Actual provider description",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low" },
+        { reasoningEffort: "high" },
+      ],
+      defaultReasoningEffort: "high",
+    },
+    {
+      model: "small-model",
+      displayName: "Smaller model",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low" },
+        { reasoningEffort: "medium" },
+      ],
+      defaultReasoningEffort: "medium",
+    },
+    {
+      model: "seven-efforts",
+      displayName:
+        "Long model name that should remain fully accessible while its visible text can ellipsize",
+      supportedReasoningEfforts: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "ultra",
+      ].map((reasoningEffort) => ({ reasoningEffort })),
+      defaultReasoningEffort: "high",
+    },
+  ];
+  h.view.buildOptions();
+  const trigger = document.querySelector(
+    ".codex-model-trigger",
+  ) as HTMLButtonElement;
+  assert.ok(trigger.title);
+  trigger.click();
+  const popup = document.querySelector(".codex-model-picker")!;
+  assert.equal(popup.querySelectorAll("select").length, 0);
+  assert.equal(popup.querySelector(".codex-picker-title"), null);
+  assert.equal(trigger.hasAttribute("title"), false);
+  const rows = Array.from(
+    popup.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+  );
+  assert.equal(rows.length, 3);
+  assert.equal(document.activeElement, rows[0]);
+  assert.equal(
+    rows[0].getAttribute("aria-description"),
+    "Actual provider description",
+  );
+  rows[0].dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+  );
+  assert.equal(document.activeElement, rows[1]);
+  assert.equal(h.plugin.settings.model, "gpt-6.1-sol");
+  rows[1].dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+  );
+  await flush();
+  assert.equal(h.plugin.settings.model, "small-model");
+  assert.equal(h.plugin.settings.effort, "medium");
+  assert.equal(rows[1].getAttribute("aria-selected"), "true");
+  assert.equal(rows[0].getAttribute("aria-selected"), "false");
+  assert.equal(document.querySelector(".codex-model-picker"), popup);
+  let checked = popup.querySelector<HTMLButtonElement>(
+    '[role="radio"][aria-checked="true"]',
+  )!;
+  assert.equal(checked.dataset.effort, "medium");
+  checked.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+  );
+  assert.equal(h.plugin.settings.effort, "low");
+  assert.equal(document.activeElement?.getAttribute("aria-checked"), "true");
+  rows[2].click();
+  await flush();
+  assert.equal(h.plugin.settings.model, "seven-efforts");
+  assert.equal(popup.querySelectorAll('[role="radio"]').length, 7);
+  const high = popup.querySelector<HTMLButtonElement>(
+    '[role="radio"][data-effort="high"]',
+  )!;
+  high.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  await flush();
+  assert.equal(h.app.savedSettings.effort, "high");
+  assert.match(trigger.textContent!, /High/);
+  assert.equal(trigger.hasAttribute("title"), false);
+  high.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  assert.equal(document.activeElement, trigger);
+  assert.ok(trigger.title);
+});
+test("unlisted saved model stays checked without invented effort options until explicit selection", async (t) => {
+  const h = await harness({ model: "custom-cli-model", effort: "xhigh" });
+  t.after(() => h.view.onClose());
+  (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  const selected = document.querySelector<HTMLButtonElement>(
+    '[role="option"][aria-selected="true"]',
+  )!;
+  assert.equal(selected.dataset.model, "custom-cli-model");
+  assert.equal(document.activeElement, selected);
+  assert.equal(h.plugin.settings.model, "custom-cli-model");
+  assert.equal(h.plugin.settings.effort, "xhigh");
+  assert.equal(
+    document.querySelectorAll('.codex-model-picker [role="radio"]').length,
+    0,
+  );
+  (
+    document.querySelector(
+      '[role="option"][data-model="gpt-6.1-sol"]',
+    ) as HTMLButtonElement
+  ).click();
+  await flush();
+  assert.equal(h.plugin.settings.model, "gpt-6.1-sol");
+  assert.equal(h.plugin.settings.effort, "high");
+});
+test("provider tabs use manual keyboard activation, lock during switch, reopen with refreshed models and preserve provider preferences", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const claude = new FakeClient();
+  claude.handler = (method) =>
+    method === "model/list"
+      ? {
+          data: [
+            {
+              model: "default",
+              displayName: "Claude current default",
+              isDefault: true,
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low" },
+                { reasoningEffort: "high" },
+              ],
+              defaultReasoningEffort: "high",
+            },
+          ],
+        }
+      : undefined;
+  h.plugin.createClient = () =>
+    h.plugin.settings.provider === "claude" ? claude : h.client;
+  (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  const codex = document.querySelector<HTMLButtonElement>(
+    '[role="tab"][aria-selected="true"]',
+  )!;
+  codex.focus();
+  codex.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+  );
+  const next = document.activeElement as HTMLButtonElement;
+  assert.equal(next.textContent, "Claude");
+  assert.equal(h.plugin.settings.provider, "codex");
+  next.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+  );
+  assert.equal(
+    (document.querySelector(".codex-model-trigger") as HTMLButtonElement)
+      .disabled,
+    true,
+  );
+  await flush();
+  assert.equal(h.plugin.settings.provider, "claude");
+  assert.equal(
+    document.querySelector('[role="tab"][aria-selected="true"]')!.textContent,
+    "Claude",
+  );
+  assert.equal(document.activeElement?.getAttribute("data-model"), "default");
+  assert.equal(h.plugin.settings.model, "default");
+  assert.equal(
+    document.querySelectorAll(".codex-model-picker select").length,
+    0,
+  );
+  assert.equal(h.plugin.settings.providerStates.codex.model, "gpt-6.1-sol");
+});
+test("slow provider switch never reopens picker over an intervening action, and detached model rows cannot change busy settings", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const claude = new FakeClient();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  claude.connect = async () => {
+    await gate;
+  };
+  h.plugin.createClient = () => claude;
+  (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  const stale = document.querySelector<HTMLButtonElement>('[role="option"]')!;
+  document.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
+  await new Promise((resolve) => setImmediate(resolve));
+  stale.click();
+  assert.equal(h.plugin.settings.model, "");
+  document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  release();
+  await flush();
+  assert.equal(h.plugin.settings.provider, "claude");
+  assert.equal(document.querySelector(".codex-model-picker"), null);
+});
+test("failed provider connection does not reopen a model picker and fallback uses only actually supported effort", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.models = [
+    {
+      model: "restricted",
+      displayName: "Restricted",
+      supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+      defaultReasoningEffort: "unsupported",
+    },
+  ];
+  h.view.buildOptions();
+  (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  (
+    document.querySelector(
+      '[role="option"][data-model="restricted"]',
+    ) as HTMLButtonElement
+  ).click();
+  assert.equal(h.plugin.settings.effort, "low");
+  const claude = new FakeClient();
+  claude.connect = async () => {
+    claude.ready = false;
+    throw new Error("CLI unavailable");
+  };
+  h.plugin.createClient = () => claude;
+  document.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
+  await flush();
+  assert.equal(document.querySelector(".codex-model-picker"), null);
+  assert.match(
+    document.querySelector(".codex-status")!.textContent!,
+    /CLI unavailable/,
+  );
+});
+
+test("model changes remeasure picker height and preserve the anchor when effort controls appear or disappear", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.models = [
+    {
+      model: "gpt-6.1-sol",
+      displayName: "Many efforts",
+      supportedReasoningEfforts: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "ultra",
+      ].map((reasoningEffort) => ({ reasoningEffort })),
+      defaultReasoningEffort: "high",
+    },
+    {
+      model: "without-effort",
+      displayName: "No reported effort",
+      supportedReasoningEfforts: [],
+    },
+  ];
+  h.view.buildOptions();
+  const trigger = document.querySelector<HTMLButtonElement>(
+    ".codex-model-trigger",
+  )!;
+  trigger.getBoundingClientRect = () => ({
+    top: 600,
+    bottom: 626,
+    left: 20,
+    right: 200,
+    width: 180,
+    height: 26,
+    x: 20,
+    y: 600,
+    toJSON() {},
+  });
+  trigger.click();
+  const popup = document.querySelector<HTMLElement>(".codex-model-picker")!;
+  Object.defineProperty(popup, "scrollHeight", {
+    configurable: true,
+    get: () => (popup.querySelectorAll('[role="radio"]').length ? 300 : 180),
+  });
+  const many = popup.querySelector<HTMLButtonElement>(
+    '[data-model="gpt-6.1-sol"]',
+  )!;
+  const none = popup.querySelector<HTMLButtonElement>(
+    '[data-model="without-effort"]',
+  )!;
+  many.click();
+  assert.equal(popup.style.top, "294px");
+  assert.equal(document.activeElement, many);
+  none.click();
+  assert.equal(popup.style.top, "414px");
+  assert.equal(document.activeElement, none);
+  many.click();
+  assert.equal(popup.style.top, "294px");
+  assert.equal(document.querySelector(".codex-model-picker"), popup);
+  assert.equal(trigger.getAttribute("aria-expanded"), "true");
 });

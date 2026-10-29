@@ -187,3 +187,11 @@ export function normalizePath(path: string) {
   return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
 }
 export class WorkspaceLeaf {}
+export function setIcon(element: HTMLElement, icon: string) {
+  const svg = element.ownerDocument.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "svg",
+  );
+  svg.setAttribute("data-icon", icon);
+  element.replaceChildren(svg);
+}

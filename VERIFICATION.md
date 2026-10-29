@@ -114,3 +114,24 @@ Native Computer Use checks passed on Obsidian 1.14.4:
 - Resized the sidebar to approximately 336 px. The direct selection action, `+`, `/`, Stop and Send fit in the footer without covering one another.
 
 Selections are limited to one note body; titles, properties, chat text and embedded other-note content are excluded. Rendered line numbers are omitted unless an editor range reliably matches. Verification used macOS/default dark theme and the shared attachment path with Claude; Codex transport regression tests passed, but a second live Codex response was not required for this UI-only attachment change. The release ZIP and installed runtime were checked for matching contents and version.
+
+## v0.3.2 — compact header icons (2026-10-29)
+
+Replaced the New/History text buttons with Obsidian square-pen/history icons in 28 px buttons, retaining titles, accessible names and existing actions. Native Computer Use confirmed both icons render, History opens the saved-conversation list, and New returns to an empty conversation. TypeScript/build and all 52 existing tests passed; the existing history test now locates the icon action by its accessible label.
+
+## v0.4.0 — compact model picker (2026-10-29)
+
+Replaced the Provider/Model/Reasoning native-select form with a 280 px popover: Codex/Claude tabs, 30 px checked model rows in a 180 px scrolling list, and a full-width wrapping reasoning control. The reference was the installed Codex VS Code extension's selectable model list and compact effort control. Computer Use access to the Codex desktop app was blocked, so it was not inspected. The plugin uses the options returned by each backend rather than copying the reference's available models or access settings.
+
+The requested GPT-6.1-Sol/high worker implemented the picker and behavioral tests. The parent independently reviewed the code, reduced the model-list height, and moved reasoning choices below their label to use the full width. TypeScript, production build, and all **58 tests passed**, including supported-effort fallback, unlisted saved models, arrow/Enter/Space navigation, provider preference isolation, busy/stale-event guards, failed connections, cancellation of delayed reopening after another user action, and repositioning when model changes alter popup height.
+
+Native Computer Use checks passed in Obsidian 1.14.4/default dark theme:
+
+- Opening focuses the checked Opus 5.5 row; the trigger tooltip is absent while the picker is open.
+- Down + Enter selects Fable 5.1 in place; Tab + Right changes Medium to High and updates the composer label. Restored Opus 5.5/Medium afterwards.
+- On the final build, selected the last model (Sonnet 4.6), observed its four reported effort choices, and restored Opus 5.5/Medium and its five choices. Clicking the composer dismisses the picker.
+- Escape closes the picker and returns focus to its trigger. End reaches the final model in the scrolling list without changing the selected model.
+- Switching to Codex disables controls during connection, restores GPT-6.1-Sol/High/Work/read-only and its history, then reopens with the actual Codex model/effort list. Switching back restores Claude Opus 5.5/Medium/Plan/read-only.
+- Resized the sidebar to approximately 336 px. The compact picker stays within it; the model list scrolls and reasoning choices remain visible. Reload confirmed the saved Claude settings and the final shorter layout.
+
+This release changes picker presentation and interaction; no additional live model response was needed. Backend transport and existing attachment/mode/permission tests remain passing. Native verification covered macOS/default dark theme, not every community theme or platform.
