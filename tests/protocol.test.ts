@@ -176,11 +176,15 @@ test("tool output and file diffs retain useful content", () => {
 });
 test("GUI executable discovery includes common macOS paths and explicit path is literal", () => {
   assert.ok(
-    executableCandidates("", { PATH: "/bin" }).includes(
-      "/opt/homebrew/bin/codex",
-    ),
+    executableCandidates("", { PATH: "/bin" }, "codex", {
+      platform: "darwin",
+      home: "/Users/test",
+    }).includes("/opt/homebrew/bin/codex"),
   );
-  assert.deepEqual(executableCandidates("/custom/codex"), ["/custom/codex"]);
+  assert.deepEqual(
+    executableCandidates("/custom/codex", {}, "codex", { platform: "darwin" }),
+    ["/custom/codex"],
+  );
 });
 
 test("attached context collapses independently of user prompt without changing stored payload", () => {

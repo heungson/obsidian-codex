@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import { resolveCliLaunch, type ExecutableContext } from "./executable";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -22,6 +24,74 @@ export type ClaudeRuntime = Pick<
   | "renameSession"
   | "forkSession"
 >;
+/** Match the SDK spawn contract while launching npm JS entries with an actual Node runtime. */
+export function claudeExecutableOptions(
+  executable: string,
+  context: ExecutableContext = {},
+  spawnProcess: typeof spawn = spawn,
+  onStderr?: (data: string) => void,
+): Pick<
+  Options,
+  "pathToClaudeCodeExecutable" | "env" | "executable" | "spawnClaudeCodeProcess"
+> {
+  const launch = resolveCliLaunch(executable, "claude", context);
+  return {
+    pathToClaudeCodeExecutable: launch.entry,
+    env: launch.env,
+    ...(launch.args.length
+      ? {
+          executable: "node" as const,
+          spawnClaudeCodeProcess: (options) => {
+            // SDK versions classify .cjs differently. Normalize the entry exactly once.
+            const args =
+              options.args[0] === launch.entry
+                ? options.args.slice(1)
+                : options.args;
+            const child = spawnProcess(
+              launch.command,
+              [...launch.args, ...args],
+              {
+                cwd: options.cwd,
+                env: options.env,
+                signal: options.signal,
+                stdio: "pipe",
+                windowsHide: true,
+                shell: false,
+              },
+            );
+            child.stderr?.setEncoding("utf8");
+            child.stderr?.on("data", (data: string) => onStderr?.(data));
+            // Wait for stdio to drain before delivering SDK exit/error summaries.
+            const event = (name: "exit" | "error") =>
+              name === "exit" ? "close" : name;
+            return {
+              stdin: child.stdin!,
+              stdout: child.stdout!,
+              get killed() {
+                return child.killed;
+              },
+              get exitCode() {
+                return child.exitCode;
+              },
+              get signalCode() {
+                return child.signalCode;
+              },
+              kill: child.kill.bind(child),
+              on: (name, listener) => {
+                child.on(event(name), listener);
+              },
+              once: (name, listener) => {
+                child.once(event(name), listener);
+              },
+              off: (name, listener) => {
+                child.off(event(name), listener);
+              },
+            };
+          },
+        }
+      : {}),
+  };
+}
 export interface ClaudeArchiveStore {
   get(): string[];
   set(ids: string[]): Promise<void>;
@@ -166,23 +236,27 @@ export class ClaudeClient extends EventEmitter {
     }
   }
   private baseOptions(): Options {
+    const stderr = (data: string) => {
+      this.stderr = (this.stderr + data).slice(-4000);
+    };
+    const executable = claudeExecutableOptions(
+      this.command(),
+      {},
+      spawn,
+      stderr,
+    );
     return {
-      pathToClaudeCodeExecutable: this.command(),
+      ...executable,
       cwd: this.cwd(),
       systemPrompt: { type: "preset", preset: "claude_code" },
       settingSources: ["user", "project", "local"],
       permissionMode: "default",
       includePartialMessages: true,
       env: {
-        ...process.env,
-        PATH: [process.env.PATH, "/opt/homebrew/bin", "/usr/local/bin"]
-          .filter(Boolean)
-          .join(process.platform === "win32" ? ";" : ":"),
+        ...executable.env,
         CLAUDE_AGENT_SDK_CLIENT_APP: "obsidian-codex/0.2.0",
       },
-      stderr: (data) => {
-        this.stderr = (this.stderr + data).slice(-4000);
-      },
+      stderr,
     };
   }
   private metadataQuery() {

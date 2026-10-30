@@ -135,3 +135,20 @@ Native Computer Use checks passed in Obsidian 1.14.4/default dark theme:
 - Resized the sidebar to approximately 336 px. The compact picker stays within it; the model list scrolls and reasoning choices remain visible. Reload confirmed the saved Claude settings and the final shorter layout.
 
 This release changes picker presentation and interaction; no additional live model response was needed. Backend transport and existing attachment/mode/permission tests remain passing. Native verification covered macOS/default dark theme, not every community theme or platform.
+
+
+## v0.4.1 — operating-system paths and CLI launchers (2026-10-30)
+
+Pulled `main` from the configured GitHub repository with `--ff-only`; it was already current at d136fa1. The screenshot's failure was reproduced in the disposable Verification Vault on Obsidian 1.14.5/macOS: legacy Windows executable and working-folder settings caused `codex executable is not accessible: C:\Users\heung\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe`.
+
+Executable overrides for both providers and the working-folder override now live in per-OS settings. Recognizable legacy Windows/UNC, macOS home/Homebrew/app, and Linux home paths migrate to their original OS, preserving them while leaving new OS overrides blank for local discovery/current vault. Explicit missing local overrides still fail with corrective guidance. Settings identify the current OS and offer automatic discovery.
+
+The requested GPT-6.1-Sol/high worker implemented platform-specific discovery and launch resolution. The parent implemented/reviewed settings migration and independently reviewed transport integration. PATH uses the correct separator and case handling, excludes relative/empty search components, and only considers regular accessible CLI files. Known Windows npm launchers resolve the installed package JS entry and an actual Node runtime with literal arguments and `shell: false`; custom/unresolved shims and foreign paths produce actionable errors. Claude's JS launcher preserves abort, stderr and process-close behavior.
+
+Validation:
+
+- TypeScript, production builds, and **73 tests passed**. Tests cover Windows/macOS/Linux discovery, Windows PATH casing/quoted paths, migration in both directions and mixed legacy fields, preserved OS overrides, explicit missing paths, directories, npm shims, real Node selection, shell characters, and Claude lifecycle/stderr. The packaged Claude SDK was initialized and closed against a real JS fixture with spaces and `&` in its path.
+- Native Computer Use: after upgrading the failing synthetic Windows configuration, Codex connected through macOS auto-discovery, reported the current Verification Vault as its folder, and loaded its model list. Saved data retained all Windows paths under `win32` while `darwin` overrides remained blank. Switching to Claude also connected through local discovery and loaded its model list. No manual path reset was needed. The live settings page showed “Path for macOS” / “Folder for macOS”, empty auto-discovery fields, and the per-OS explanation. The final build reloaded with the original Claude settings and connected successfully.
+- The worker also smoke-tested the installed macOS Codex and Claude metadata connections. Native Windows/Linux process execution was not available; those platforms were exercised through injected host/path/filesystem facts rather than claimed as live desktop tests.
+
+The Verification Vault's original settings were backed up before reproduction and restored after verification. The final release ZIP and installed test runtime were checked for matching version and contents.

@@ -177,6 +177,34 @@ function click(text: string, root: ParentNode = document) {
 function event(client: FakeClient, method: string, params: any) {
   client.emit("notification", method, { threadId: "thread-1", ...params });
 }
+test("plugin migrates synced foreign paths before client creation and saves local edits without overwriting the other OS", async (t) => {
+  const foreign =
+    process.platform === "win32"
+      ? {
+          executable: "/Users/other/bin/codex",
+          claudeExecutable: "/Users/other/bin/claude",
+          cwd: "/Users/other/vault",
+        }
+      : {
+          executable: "C:\\tools\\codex.exe",
+          claudeExecutable: "C:\\tools\\claude.exe",
+          cwd: "C:\\vault",
+        };
+  const foreignPlatform = process.platform === "win32" ? "darwin" : "win32";
+  const h = await harness(foreign);
+  t.after(() => h.view.onClose());
+  assert.equal(h.plugin.settings.executable, "");
+  assert.equal(h.plugin.settings.claudeExecutable, "");
+  assert.equal(h.plugin.cwd(), "/vault");
+  assert.deepEqual(h.app.savedSettings.platformPaths[foreignPlatform], foreign);
+  h.plugin.settings.executable = process.execPath;
+  await h.plugin.save();
+  assert.equal(
+    h.app.savedSettings.platformPaths[process.platform].executable,
+    process.execPath,
+  );
+  assert.deepEqual(h.app.savedSettings.platformPaths[foreignPlatform], foreign);
+});
 test("compact pickers retain choices, dismiss with keyboard/outside focus, and close while busy", async (t) => {
   const h = await harness();
   t.after(() => h.view.onClose());

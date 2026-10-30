@@ -35,6 +35,12 @@ import {
 } from "./session";
 import { enumOptions, validateFormValue } from "./forms";
 import { ClaudeClient, type ClaudeRuntime } from "./claude";
+import {
+  loadPlatformPaths,
+  rememberPlatformPaths,
+  platformName,
+  type PlatformPathMap,
+} from "./platform-settings";
 type Provider = "codex" | "claude";
 type ProviderPreferences = Pick<
   Settings,
@@ -50,6 +56,7 @@ import {
 } from "./selection";
 const VIEW = "obsidian-codex-chat";
 interface Settings {
+  platformPaths: PlatformPathMap;
   provider: Provider;
   claudeExecutable: string;
   providerStates: Partial<Record<Provider, ProviderPreferences>>;
@@ -65,6 +72,7 @@ interface Settings {
   maxContextChars: number;
 }
 const DEFAULTS: Settings = {
+  platformPaths: {},
   provider: "codex",
   claudeExecutable: "",
   providerStates: {},
@@ -527,7 +535,9 @@ export default class CodexPlugin extends Plugin {
   declare settings: Settings;
   client!: CodexClient | ClaudeClient;
   async onload() {
-    this.settings = { ...DEFAULTS, ...(await this.loadData()) };
+    const saved = (await this.loadData()) ?? {};
+    this.settings = { ...DEFAULTS, ...saved, ...loadPlatformPaths(saved) };
+    await this.save();
     this.client = this.createClient();
     this.registerView(VIEW, (leaf) => new CodexView(leaf, this));
     this.addSettingTab(new CodexSettingsTab(this.app, this));
@@ -697,6 +707,10 @@ export default class CodexPlugin extends Plugin {
     return adapter.getBasePath();
   }
   async save() {
+    this.settings.platformPaths = rememberPlatformPaths(
+      this.settings,
+      this.settings.platformPaths,
+    );
     await this.saveData(this.settings);
   }
   async open() {
@@ -745,11 +759,11 @@ class CodexSettingsTab extends PluginSettingTab {
     new Setting(c)
       .setName("Claude Code executable")
       .setDesc(
-        "Absolute path to your installed Claude CLI. Blank checks PATH, Homebrew and user-local locations. Existing Claude login is reused.",
+        `Path for ${platformName()}. Blank discovers the installed Claude CLI on this system. Paths for other operating systems are kept separately. Existing Claude login is reused.`,
       )
       .addText((t) =>
         t
-          .setPlaceholder("/opt/homebrew/bin/claude")
+          .setPlaceholder("Auto-detect Claude CLI")
           .setValue(this.plugin.settings.claudeExecutable)
           .onChange(async (value) => {
             this.plugin.settings.claudeExecutable = value.trim();
@@ -759,11 +773,11 @@ class CodexSettingsTab extends PluginSettingTab {
     new Setting(c)
       .setName("Codex executable")
       .setDesc(
-        "Absolute path. Blank discovers common Homebrew, npm, user-local and Codex.app locations. Run “which codex” in a terminal to find it.",
+        `Path for ${platformName()}. Blank discovers the installed Codex CLI on this system. Paths for other operating systems are kept separately.`,
       )
       .addText((t) =>
         t
-          .setPlaceholder("/opt/homebrew/bin/codex")
+          .setPlaceholder("Auto-detect Codex CLI")
           .setValue(this.plugin.settings.executable)
           .onChange(async (v) => {
             this.plugin.settings.executable = v.trim();
@@ -773,7 +787,7 @@ class CodexSettingsTab extends PluginSettingTab {
     new Setting(c)
       .setName("Working folder")
       .setDesc(
-        "Blank uses the vault folder. This controls tools and conversation history. New turns use this folder.",
+        `Folder for ${platformName()}. Blank uses this vault's current location. This controls tools and conversation history. Paths for other operating systems are kept separately.`,
       )
       .addText((t) =>
         t

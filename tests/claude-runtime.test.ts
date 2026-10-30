@@ -107,3 +107,67 @@ test("packaged Claude SDK works with renderer DOM AbortSignal/timers and carries
     await window.happyDOM.close();
   }
 });
+
+test("actual packaged SDK initializes and disconnects through real JS launcher, including stderr and paths with shell characters", async (t) => {
+  const { mkdtempSync, readFileSync, writeFileSync, rmSync } =
+    await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { claudeExecutableOptions } = await import("../src/claude");
+  const dir = mkdtempSync(join(tmpdir(), "claude JS & space "));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const entry = join(dir, "fixture.cjs");
+  writeFileSync(
+    entry,
+    'process.stderr.write("JS-LAUNCHER-DIAGNOSTIC\\n");\n' +
+      readFileSync(resolve("tests/fake-claude.cjs"), "utf8"),
+  );
+  const require = createRequire(resolve("package.json"));
+  const sdk = require(resolve("claude-sdk.cjs"));
+  let child: ReturnType<typeof spawn> | undefined;
+  let stderr = "";
+  let closed!: Promise<void>;
+  const recordSpawn = ((command: string, args: string[], options: any) => {
+    assert.equal(args[0], entry);
+    assert.equal(options.shell, false);
+    child = spawn(command, args, options);
+    closed = new Promise<void>((resolve, reject) => {
+      child!.once("close", () => resolve());
+      child!.once("error", reject);
+    });
+    return child;
+  }) as typeof spawn;
+  const query = sdk.query({
+    prompt: {
+      async *[Symbol.asyncIterator]() {
+        await new Promise(() => {});
+      },
+    },
+    options: {
+      ...claudeExecutableOptions(entry, {}, recordSpawn, (data) => {
+        stderr += data;
+      }),
+      persistSession: false,
+    },
+  });
+  let timer: ReturnType<typeof nodeTimeout> | undefined;
+  try {
+    assert.equal((await query.supportedModels())[0].value, "fixture");
+    query.close();
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => {
+        timer = nodeTimeout(
+          () => reject(new Error("JS launcher did not close its process")),
+          5000,
+        );
+      }),
+    ]);
+    assert.match(stderr, /JS-LAUNCHER-DIAGNOSTIC/);
+    assert.equal(child!.exitCode, 0);
+  } finally {
+    nodeClear(timer);
+    query.close();
+    if (child?.exitCode === null) child.kill("SIGKILL");
+  }
+});

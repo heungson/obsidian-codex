@@ -11,14 +11,16 @@ This unofficial community integration is independent of OpenAI, Anthropic, and O
 Requires Obsidian desktop 1.8+ and at least one installed, authenticated CLI. Tested with **Codex CLI 0.164.0**, **Claude Code 2.1.312**, and the pinned **Claude Agent SDK 0.3.312**. Codex app-server uses experimental APIs; CLI/SDK changes may require a compatible plugin update.
 
 1. Check `codex --version` or `claude --version` in a terminal. Complete your provider's normal terminal login if needed. No API key or password is entered in the plugin.
-2. Extract `obsidian-codex-0.4.0.zip` and copy its `obsidian-codex` folder into `<vault>/.obsidian/plugins/`. Replace the previous plugin files when upgrading. **Include `claude-sdk.cjs` and `THIRD_PARTY_NOTICES.md`**, not just the old three-file Codex build.
+2. Extract `obsidian-codex-0.4.1.zip` and copy its `obsidian-codex` folder into `<vault>/.obsidian/plugins/`. Replace the previous plugin files when upgrading. **Include `claude-sdk.cjs` and `THIRD_PARTY_NOTICES.md`**, not just the old three-file Codex build.
 3. Restart Obsidian and enable **Settings → Community plugins → Codex**. The existing plugin ID/name is retained for upgrades and command-palette compatibility.
 4. Open **Codex: Open chat**, then click the **model · effort** button below the prompt and choose the **Codex** or **Claude** tab. Settings also offer a provider selector. Keyboard users can run **Codex: Use Claude Code CLI** or **Codex: Use Codex CLI**.
 5. The **model · effort** picker has compact Codex/Claude tabs, a checked model list, and reasoning buttons. Model and effort changes apply immediately; arrow keys navigate the choices, and Enter or Space selects a model or provider. The adjacent **Work/Plan · permissions** picker contains mode and permissions. Press Escape to close a picker. Then send a prompt. Read-only is the default for a newly selected provider.
 
 Each provider keeps its own model, effort, permission mode, and last conversation. Switching clears the composer and attachments and restores the selected provider's history. Finish or stop a running turn before switching. Existing Codex settings/history remain available.
 
-If a GUI app cannot find a CLI, run `which codex` or `which claude` and put the **absolute executable path** into **Settings → Codex**. Automatic discovery checks PATH, Homebrew, npm-global, and user-local locations. A leading `~` expands to your home folder. Executable settings accept a path, not a shell command or arguments.
+Executable paths and the working-folder override are saved separately for macOS, Windows, and Linux. When upgrading a synced vault, recognizable legacy paths are retained for their original OS; the current OS uses local CLI discovery and the current vault folder until you set its own overrides.
+
+If a GUI app cannot find a CLI, run `which codex` / `which claude` on macOS or Linux, or `where.exe codex` / `where.exe claude` on Windows, and put the **absolute executable path** into **Settings → Codex**. Blank uses discovery for the current OS. A leading `~` expands to your home folder. Executable settings accept a path, not a shell command or arguments. A missing explicit override reports an error so a typo does not select a different installation. Discovery uses OS-specific locations: Homebrew and Codex.app on macOS, user-local/system bins on Linux, and user-local bins, npm, and the OpenAI Codex install folder on Windows. Known Windows npm `codex.cmd` / `claude.cmd` launchers resolve to their package JavaScript entry and a real Node.js executable; arbitrary shell shims are rejected with guidance. Native CLI installs do not need a separate Node.js runtime. Windows and Linux paths/launches have regression coverage; live desktop verification was performed on macOS.
 
 To build and install from source without downloading the SDK's optional native CLI packages:
 
@@ -112,7 +114,7 @@ Git review requires a Git working folder. Claude review supplies fixed-argument,
 
 - **Login:** complete normal `codex login` or Claude's `/login` flow in a terminal as the same OS user; then reconnect. No auth configuration is changed by the plugin.
 - **Missing `claude-sdk.cjs`:** reinstall the entire release folder; copying only `main.js` from an old three-file installation is insufficient.
-- **Working folder:** blank uses your vault root. Set an existing absolute folder and reconnect for another project. History uses that folder; note/file attachments still come from the current vault. Start a new conversation when changing projects.
+- **Working folder:** saved separately for each OS; blank uses your vault at its current location. Set an existing absolute folder and reconnect for another project. History uses that folder; note/file attachments still come from the current vault. Start a new conversation when changing projects.
 - **CLI/protocol error:** use **⋯ → Reconnect** after fixing executable/login/version issues. Prompts rejected before acceptance stay in the composer. For errors after acceptance, inspect the conversation before retrying; an action may already have run.
 - **Long attachments:** total text defaults to 60,000 characters per message; settings permit 1,000–500,000. Select a smaller excerpt to use less context. A character limit does not guarantee a token budget.
 - **Claude blocked tool:** read-only deliberately blocks shell, editing, agents, and MCP tools even when existing settings would allow them. Switch explicitly to Manual approvals for work that needs those tools.
@@ -124,7 +126,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check          # typecheck, production builds, transport/adapter/view tests
 npm run dev            # watch main + SDK runtime
-npm run bundle         # dist/obsidian-codex-0.4.0.zip
+npm run bundle         # dist/obsidian-codex-0.4.1.zip
 ```
 
 `npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The shipped SDK is a JavaScript-only CJS sidecar with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.

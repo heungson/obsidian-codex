@@ -1,9 +1,10 @@
 import { setTimeout, clearTimeout } from "node:timers";
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, accessSync, constants } from "node:fs";
-import { homedir } from "node:os";
-import { delimiter, join, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { resolveCliLaunch } from "./executable";
+export { executableCandidates, findExecutable } from "./executable";
 export type RpcId = string | number;
 export type Json = Record<string, any>;
 export class RpcError extends Error {
@@ -14,44 +15,6 @@ export class RpcError extends Error {
   ) {
     super(message);
   }
-}
-export function executableCandidates(
-  configured: string,
-  env = process.env,
-  program = "codex",
-): string[] {
-  const dirs = [
-    ...(env.PATH ?? "").split(delimiter),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    join(homedir(), ".local/bin"),
-    join(homedir(), ".npm-global/bin"),
-    "/Applications/Codex.app/Contents/Resources",
-  ];
-  if (configured.trim())
-    return [configured.trim().replace(/^~(?=\/)/, homedir())];
-  return [
-    ...new Set(
-      dirs
-        .filter(Boolean)
-        .map((p) =>
-          join(p, process.platform === "win32" ? `${program}.exe` : program),
-        ),
-    ),
-  ];
-}
-export function findExecutable(configured: string, program = "codex"): string {
-  for (const p of executableCandidates(configured, process.env, program)) {
-    try {
-      accessSync(p, constants.X_OK);
-      return p;
-    } catch {}
-  }
-  throw new Error(
-    configured
-      ? `${program} executable is not accessible: ${configured}`
-      : `${program} CLI not found. Install it, sign in in a terminal, then set its absolute executable path in Settings → Codex.`,
-  );
 }
 /** JSONL transport. Server requests and notifications are delivered before their originating response, if emitted in that order. */
 export class CodexClient extends EventEmitter {
@@ -95,21 +58,11 @@ export class CodexClient extends EventEmitter {
     const gen = ++this.generation;
     this.buffer = "";
     this.stderr = "";
-    const env = {
-      ...process.env,
-      PATH: [
-        process.env.PATH,
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        join(homedir(), ".local/bin"),
-      ]
-        .filter(Boolean)
-        .join(delimiter),
-    };
+    const launch = resolveCliLaunch(command);
     const proc = this.spawnProcess(
-      command,
-      ["app-server", "--listen", "stdio://"],
-      { cwd, env, stdio: "pipe", windowsHide: true },
+      launch.command,
+      [...launch.args, "app-server", "--listen", "stdio://"],
+      { cwd, env: launch.env, stdio: "pipe", windowsHide: true, shell: false },
     ) as ChildProcessWithoutNullStreams;
     this.child = proc;
     proc.stdout.setEncoding("utf8");

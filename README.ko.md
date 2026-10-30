@@ -121,7 +121,7 @@ node scripts/install.mjs "/absolute/path/to/your/vault"
 
 ## 설정과 문제 해결
 
-**CLI를 찾지 못할 때:** macOS의 GUI 앱은 터미널과 `PATH`가 다를 수 있습니다. 터미널에서 `which codex`로 찾은 **절대 경로**를 **설정 → Codex → Codex executable**에 입력한 다음 재연결합니다. 빈 값이면 `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.npm-global/bin`, 일반 PATH 및 Codex.app 리소스를 확인합니다. `~`로 시작하는 홈 경로는 지원합니다. 실행 파일 문자열에 명령 인자나 셸 스크립트를 입력하지 마세요.
+**CLI를 찾지 못할 때:** 실행 파일 경로와 Working folder는 macOS·Windows·Linux별로 따로 저장합니다. 동기화된 보관함을 업그레이드하면 기존 Windows 경로는 Windows용으로 보관하고, macOS에서는 로컬 CLI를 자동으로 찾습니다. 빈 실행 경로는 현재 운영체제의 자동 탐색을 사용하고, 빈 Working folder는 현재 보관함 위치를 사용합니다. macOS/Linux에서는 `which codex` 또는 `which claude`, Windows에서는 `where.exe codex` 또는 `where.exe claude`로 찾은 절대 경로를 설정에 입력할 수 있습니다. `~` 홈 경로를 지원합니다. 명시한 경로가 없거나 다른 운영체제의 경로이면 오류를 표시합니다. 경로에 명령 인자나 셸 스크립트를 입력하지 마세요.
 
 **로그인/계정 문제:** 터미널에서 같은 사용자·같은 Codex 설정으로 `codex login`을 수행합니다. 플러그인의 `/status`에서 계정 상태를 확인할 수 있습니다. 새 로그인 창과 자격 증명 입력 UI는 제공하지 않습니다.
 
@@ -140,7 +140,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check       # TypeScript + protocol/session tests + production bundle
 npm run dev         # rebuild on source changes
-npm run bundle      # dist/obsidian-codex-0.4.0.zip
+npm run bundle      # dist/obsidian-codex-0.4.1.zip
 ```
 
 - `src/protocol.ts`: JSONL 전송, 프로세스 수명, 요청 ID·타임아웃·서버 요청, 실행 파일 발견, 권한 매핑.
