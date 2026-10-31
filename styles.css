@@ -1,9 +1,9 @@
-.codex-view {
+.workspace-leaf-content .view-content.codex-view {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   min-height: 0;
-  padding: 12px 12px calc(12px + var(--status-bar-height, 24px)) !important;
+  padding: 12px 12px calc(12px + var(--status-bar-height, 24px));
   gap: 6px;
   min-width: 230px;
   overflow: hidden;
@@ -129,7 +129,7 @@ button.codex-response-selection-action[hidden] {
   height: 1px;
   padding: 0;
   overflow: hidden;
-  clip-path: inset(50%);
+  clip: rect(0, 0, 0, 0);
 }
 .codex-userMessage {
   display: flex;
@@ -576,7 +576,7 @@ button.codex-response-selection-action[hidden] {
   gap: 6px;
 }
 .codex-model-picker [hidden] {
-  display: none !important;
+  display: none;
 }
 .codex-power-panel {
   min-width: 0;

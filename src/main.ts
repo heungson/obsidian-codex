@@ -17,7 +17,7 @@ import {
   normalizePath,
   setIcon,
 } from "obsidian";
-import { basename, relative, resolve, isAbsolute, join } from "node:path";
+import { basename, relative, isAbsolute } from "node:path";
 import {
   CodexClient,
   findExecutable,
@@ -137,7 +137,7 @@ class InputModal extends Modal {
       if (e.key === "Enter") submit();
     });
     button(this.contentEl, "Save", submit);
-    setTimeout(() => input.focus(), 0);
+    input.ownerDocument.defaultView?.setTimeout(() => input.focus(), 0);
   }
 }
 class InfoModal extends Modal {
@@ -443,7 +443,7 @@ class HistoryModal extends Modal {
   private archived = false;
   private cursor: string | null = null;
   private serial = 0;
-  private timer?: ReturnType<typeof setTimeout>;
+  private timer?: number;
   private closed = false;
   constructor(
     app: App,
@@ -459,8 +459,11 @@ class HistoryModal extends Modal {
       cls: "codex-wide",
     });
     this.search.addEventListener("input", () => {
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => void this.load(false), 250);
+      this.contentEl.ownerDocument.defaultView?.clearTimeout(this.timer);
+      this.timer = this.contentEl.ownerDocument.defaultView?.setTimeout(
+        () => void this.load(false),
+        250,
+      );
     });
     new Setting(this.contentEl)
       .setName("Archived conversations")
@@ -529,7 +532,7 @@ class HistoryModal extends Modal {
   }
   onClose() {
     this.closed = true;
-    clearTimeout(this.timer);
+    this.contentEl.ownerDocument.defaultView?.clearTimeout(this.timer);
   }
 }
 export default class CodexPlugin extends Plugin {
@@ -743,7 +746,7 @@ class CodexSettingsTab extends PluginSettingTab {
   display() {
     const { containerEl: c } = this;
     c.empty();
-    c.createEl("h2", { text: "Codex & Claude Code" });
+    new Setting(c).setName("Codex & Claude Code").setHeading();
     c.createEl("p", {
       text: "Uses the selected installed CLI and its existing login. No credentials are stored by this plugin. Restart the connection after changing the executable or working folder.",
     });
@@ -887,7 +890,7 @@ class CodexView extends ItemView {
   private requestModal?: RequestModal;
   private closed = false;
   private connectedOnce = false;
-  private renderTimer?: ReturnType<typeof setTimeout>;
+  private renderTimer?: number;
   private dirty = new Set<string>();
   private historyCursor: string | null = null;
   private paginated = false;
@@ -985,7 +988,7 @@ class CodexView extends ItemView {
     const finishCompositionSend = () => {
       if (!sendAfterComposition) return;
       sendAfterComposition = false;
-      setTimeout(() => {
+      this.input.ownerDocument.defaultView?.setTimeout(() => {
         if (!this.closed) void this.send();
       }, 0);
     };
@@ -999,7 +1002,10 @@ class CodexView extends ItemView {
       if (e.isComposing) {
         sendAfterComposition = true;
         this.input.blur();
-        setTimeout(finishCompositionSend, 50);
+        this.input.ownerDocument.defaultView?.setTimeout(
+          finishCompositionSend,
+          50,
+        );
         return;
       }
       void this.send();
@@ -1085,7 +1091,7 @@ class CodexView extends ItemView {
     this.composerShortcutCleanup?.();
     this.selectionIntent?.dispose();
     this.menuSelectionCleanup?.();
-    clearTimeout(this.renderTimer);
+    this.contentEl.ownerDocument.defaultView?.clearTimeout(this.renderTimer);
     this.picker?.close(false);
     this.requestModal?.close();
     for (const p of this.pending) {
@@ -2428,11 +2434,14 @@ class CodexView extends ItemView {
   private scheduleRender(id: string) {
     this.dirty.add(id);
     if (this.renderTimer) return;
-    this.renderTimer = setTimeout(() => {
-      this.renderTimer = undefined;
-      for (const id of this.dirty) this.renderItem(id);
-      this.dirty.clear();
-    }, 60);
+    this.renderTimer = this.contentEl.ownerDocument.defaultView?.setTimeout(
+      () => {
+        this.renderTimer = undefined;
+        for (const id of this.dirty) this.renderItem(id);
+        this.dirty.clear();
+      },
+      60,
+    );
   }
   private openChangedFile(path: string) {
     const adapter = this.app.vault.adapter;

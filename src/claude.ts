@@ -1,4 +1,9 @@
 import { EventEmitter } from "node:events";
+// Claude runs as a Node child process, so its timeouts must use Node timers.
+import {
+  setTimeout as nodeSetTimeout,
+  clearTimeout as nodeClearTimeout,
+} from "node:timers";
 import { spawn } from "node:child_process";
 import { resolveCliLaunch, type ExecutableContext } from "./executable";
 import { randomUUID } from "node:crypto";
@@ -286,12 +291,12 @@ export class ClaudeClient extends EventEmitter {
     ms: number,
     label: string,
   ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: ReturnType<typeof nodeSetTimeout> | undefined;
     try {
       return await Promise.race([
         promise,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
+          timer = nodeSetTimeout(
             () =>
               reject(
                 new Error(`${label} timed out. Reconnect before retrying.`),
@@ -301,7 +306,7 @@ export class ClaudeClient extends EventEmitter {
         }),
       ]);
     } finally {
-      clearTimeout(timer);
+      nodeClearTimeout(timer);
     }
   }
   async request(method: string, p: Json = {}, _timeout?: number): Promise<any> {
