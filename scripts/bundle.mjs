@@ -6,7 +6,6 @@ const directory = resolve("dist", manifest.id);
 mkdirSync(directory, { recursive: true });
 for (const name of [
   "main.js",
-  "claude-sdk.cjs",
   "THIRD_PARTY_NOTICES.md",
   "manifest.json",
   "styles.css",

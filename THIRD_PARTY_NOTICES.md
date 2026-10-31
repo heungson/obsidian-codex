@@ -8,7 +8,7 @@ The Obsidian plugin source is MIT licensed (see LICENSE). The bundled Claude run
 - Publisher: Anthropic PBC
 - Source package: https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk
 - Repository: https://github.com/anthropics/claude-agent-sdk-typescript
-- Distributed here as a JavaScript-only CommonJS bundle: `claude-sdk.cjs`.
+- Distributed as a JavaScript-only CommonJS bundle embedded in `main.js`.
 - No Anthropic native CLI binary is included. The plugin requires the user's separately installed Claude Code executable and always passes that path explicitly.
 
 The package's `LICENSE.md` states:
@@ -17,7 +17,7 @@ The package's `LICENSE.md` states:
 
 The SDK README links its [Commercial Terms](https://www.anthropic.com/legal/commercial-terms), [Privacy Policy](https://www.anthropic.com/legal/privacy), and [Claude Code data usage documentation](https://code.claude.com/docs/en/data-usage). Those terms and provider policies apply to the SDK/Claude service; this plugin does not replace them.
 
-The runtime preserves bundled dependency copyright/license comments at the end of `claude-sdk.cjs` (`legalComments: "eof"`). These include the notices distributed in the official SDK. They must remain with redistributed runtime copies.
+The runtime preserves bundled dependency copyright/license comments in `main.js` (`legalComments: "eof"`). These include the notices distributed in the official SDK. They must remain with redistributed runtime copies.
 
 ## Packaging adaptations
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 const vault = process.argv[2];
 if (!vault) {
@@ -14,7 +14,6 @@ if (!existsSync(join(root, ".obsidian"))) {
 }
 for (const file of [
   "main.js",
-  "claude-sdk.cjs",
   "manifest.json",
   "styles.css",
   "THIRD_PARTY_NOTICES.md",
@@ -24,7 +23,8 @@ for (const file of [
     console.error("Build first with npm run build.");
     process.exit(1);
   }
-const destination = join(root, ".obsidian", "plugins", "obsidian-codex");
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const destination = join(root, ".obsidian", "plugins", manifest.id);
 if (existsSync(destination)) {
   const backup = join(
     root,
@@ -35,7 +35,6 @@ if (existsSync(destination)) {
   mkdirSync(backup, { recursive: true });
   for (const file of [
     "main.js",
-    "claude-sdk.cjs",
     "manifest.json",
     "styles.css",
     "THIRD_PARTY_NOTICES.md",
@@ -48,7 +47,6 @@ if (existsSync(destination)) {
 mkdirSync(destination, { recursive: true });
 for (const file of [
   "main.js",
-  "claude-sdk.cjs",
   "manifest.json",
   "styles.css",
   "THIRD_PARTY_NOTICES.md",

@@ -383,6 +383,32 @@ test("plugin migrates synced foreign paths before client creation and saves loca
   );
   assert.deepEqual(h.app.savedSettings.platformPaths[foreignPlatform], foreign);
 });
+test("community plugin copies legacy settings once without changing the original", async () => {
+  host = await hostPromise;
+  setupDOM();
+  const original = JSON.stringify({ model: "saved-model", effort: "high" });
+  const app: any = {
+    vault: {
+      configDir: ".obsidian",
+      adapter: {
+        exists: async (path: string) =>
+          path === ".obsidian/plugins/obsidian-codex/data.json",
+        read: async () => original,
+      },
+    },
+    workspace: { on: () => ({}), offref: () => {} },
+  };
+  const plugin = new host.CodexPlugin(app);
+  plugin.manifest = { id: "codex-agent-chat" };
+  plugin.loadData = async () => null;
+  await plugin.onload();
+  assert.equal(plugin.settings.model, "saved-model");
+  assert.equal(app.savedSettings.model, "saved-model");
+  assert.equal(
+    original,
+    JSON.stringify({ model: "saved-model", effort: "high" }),
+  );
+});
 test("compact pickers retain choices, dismiss with keyboard/outside focus, and close while busy", async (t) => {
   const h = await harness();
   t.after(() => h.view.onClose());

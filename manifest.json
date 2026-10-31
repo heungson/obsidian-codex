@@ -1,7 +1,7 @@
 {
-  "id": "obsidian-codex",
+  "id": "codex-agent-chat",
   "name": "Codex",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "minAppVersion": "1.8.0",
   "description": "Chat with local Codex or Claude Code CLI using notes, streamed responses, approvals, and saved sessions.",
   "author": "Obsidian Codex contributors",

@@ -35,7 +35,7 @@ test("packaged Claude SDK works with renderer DOM AbortSignal/timers and carries
             : (window as any)[key],
       });
     const require = createRequire(resolve("package.json"));
-    const sdk = require(resolve("claude-sdk.cjs"));
+    const sdk = require(resolve("dist/embedded-runtime-test.cjs"));
     let used = false;
     let callback = 0;
     const prompt = {
@@ -123,7 +123,7 @@ test("actual packaged SDK initializes and disconnects through real JS launcher, 
       readFileSync(resolve("tests/fake-claude.cjs"), "utf8"),
   );
   const require = createRequire(resolve("package.json"));
-  const sdk = require(resolve("claude-sdk.cjs"));
+  const sdk = require(resolve("dist/embedded-runtime-test.cjs"));
   let child: ReturnType<typeof spawn> | undefined;
   let stderr = "";
   let closed!: Promise<void>;

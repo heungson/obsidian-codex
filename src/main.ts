@@ -35,6 +35,7 @@ import {
 } from "./session";
 import { enumOptions, validateFormValue } from "./forms";
 import { ClaudeClient, type ClaudeRuntime } from "./claude";
+import { embeddedClaudeRuntime } from "./embedded-claude";
 import {
   loadPlatformPaths,
   rememberPlatformPaths,
@@ -535,7 +536,26 @@ export default class CodexPlugin extends Plugin {
   declare settings: Settings;
   client!: CodexClient | ClaudeClient;
   async onload() {
-    const saved = (await this.loadData()) ?? {};
+    let saved = await this.loadData();
+    if (saved == null && this.manifest?.id === "codex-agent-chat") {
+      const legacy = normalizePath(
+        `${this.app.vault.configDir}/plugins/obsidian-codex/data.json`,
+      );
+      if (await this.app.vault.adapter.exists(legacy)) {
+        try {
+          saved = JSON.parse(await this.app.vault.adapter.read(legacy));
+          new Notice(
+            "Codex settings were copied from the previous installation. Disable the old Codex plugin to avoid duplicate panels.",
+          );
+        } catch (error) {
+          console.error("Could not migrate previous Codex settings", error);
+          new Notice(
+            "Could not copy previous Codex settings. The original settings are unchanged.",
+          );
+        }
+      }
+    }
+    saved ??= {};
     this.settings = { ...DEFAULTS, ...saved, ...loadPlatformPaths(saved) };
     await this.save();
     this.client = this.createClient();
@@ -641,13 +661,7 @@ export default class CodexPlugin extends Plugin {
         () => findExecutable(this.settings.claudeExecutable, "claude"),
         () => this.cwd(),
         () => {
-          const adapter = this.app.vault.adapter;
-          if (!(adapter instanceof FileSystemAdapter))
-            throw new Error("Claude Code requires a local vault");
-          const dir = this.manifest?.dir ?? ".obsidian/plugins/obsidian-codex";
-          return require(
-            join(adapter.getBasePath(), dir, "claude-sdk.cjs"),
-          ) as ClaudeRuntime;
+          return embeddedClaudeRuntime() as ClaudeRuntime;
         },
         {
           get: () => this.settings.claudeArchived,

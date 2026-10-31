@@ -11,10 +11,9 @@ This unofficial community integration is independent of OpenAI, Anthropic, and O
 Requires Obsidian desktop 1.8+ and at least one installed, authenticated CLI. Tested with **Codex CLI 0.164.0**, **Claude Code 2.1.312**, and the pinned **Claude Agent SDK 0.3.312**. Codex app-server uses experimental APIs; CLI/SDK changes may require a compatible plugin update.
 
 1. Check `codex --version` or `claude --version` in a terminal. Complete your provider's normal terminal login if needed. No API key or password is entered in the plugin.
-2. Extract `obsidian-codex-0.4.1.zip` and copy its `obsidian-codex` folder into `<vault>/.obsidian/plugins/`. Replace the previous plugin files when upgrading. **Include `claude-sdk.cjs` and `THIRD_PARTY_NOTICES.md`**, not just the old three-file Codex build.
-3. Restart Obsidian and enable **Settings → Community plugins → Codex**. The existing plugin ID/name is retained for upgrades and command-palette compatibility.
-4. Open **Codex: Open chat**, then click the **model · effort** button below the prompt and choose the **Codex** or **Claude** tab. Settings also offer a provider selector. Keyboard users can run **Codex: Use Claude Code CLI** or **Codex: Use Codex CLI**.
-5. The **model · effort** picker has compact Codex/Claude tabs, a checked model list, and reasoning buttons. Model and effort changes apply immediately; arrow keys navigate the choices, and Enter or Space selects a model or provider. The adjacent **Work/Plan · permissions** picker contains mode and permissions. Press Escape to close a picker. Then send a prompt. Read-only is the default for a newly selected provider.
+2. Install from the Obsidian Community plugins directory once the plugin is published, or download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub release into `<vault>/.obsidian/plugins/codex-agent-chat/`.
+3. Enable **Settings → Community plugins → Codex**. If upgrading from the earlier manual installation, disable the old Codex plugin first. The new plugin copies the old settings on first launch; the original settings remain in place.
+4. Open **Codex: Open chat**. The **model · effort** control opens the reasoning selector; click the model name inside it to choose a provider or model. The adjacent **Work/Plan · permissions** picker contains mode and permissions. Read-only is the default for a newly selected provider.
 
 Each provider keeps its own model, effort, permission mode, and last conversation. Switching clears the composer and attachments and restores the selected provider's history. Finish or stop a running turn before switching. Existing Codex settings/history remain available.
 
@@ -113,7 +112,7 @@ Git review requires a Git working folder. Claude review supplies fixed-argument,
 ## Troubleshooting
 
 - **Login:** complete normal `codex login` or Claude's `/login` flow in a terminal as the same OS user; then reconnect. No auth configuration is changed by the plugin.
-- **Missing `claude-sdk.cjs`:** reinstall the entire release folder; copying only `main.js` from an old three-file installation is insufficient.
+- **Claude reports an unknown CLI option:** install a Claude Code version compatible with the pinned SDK; older versions such as 1.0.65 do not support its required options. Version 2.1.312 was used in earlier compatibility testing.
 - **Working folder:** saved separately for each OS; blank uses your vault at its current location. Set an existing absolute folder and reconnect for another project. History uses that folder; note/file attachments still come from the current vault. Start a new conversation when changing projects.
 - **CLI/protocol error:** use **⋯ → Reconnect** after fixing executable/login/version issues. Prompts rejected before acceptance stay in the composer. For errors after acceptance, inspect the conversation before retrying; an action may already have run.
 - **Long attachments:** total text defaults to 60,000 characters per message; settings permit 1,000–500,000. Select a smaller excerpt to use less context. A character limit does not guarantee a token budget.
@@ -125,16 +124,16 @@ Git review requires a Git working folder. Claude review supplies fixed-argument,
 npm ci --omit=optional
 npm rebuild esbuild
 npm run check          # typecheck, production builds, transport/adapter/view tests
-npm run dev            # watch main + SDK runtime
-npm run bundle         # dist/obsidian-codex-0.4.1.zip
+npm run dev            # watch the plugin
+npm run bundle         # dist/codex-agent-chat-0.5.0.zip
 ```
 
-`npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The shipped SDK is a JavaScript-only CJS sidecar with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.
+`npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The JavaScript SDK is embedded in `main.js` with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.
 
 - `src/protocol.ts`: Codex JSONL transport, process lifecycle, executable discovery, policies.
 - `src/claude.ts`: official-SDK adapter, streaming/block reconciliation, session helpers, approvals/questions, interruption.
 - `src/claude-review.ts`: bounded read-only Git review snapshots.
-- `src/claude-sdk-runtime.ts`: SDK sidecar entry point.
+- `src/claude-sdk-runtime.ts`: SDK bundle entry point.
 - `src/session.ts`, `src/forms.ts`: turn races, explicit context, typed form validation.
 - `src/main.ts`: native Obsidian view/settings/dialogs and serialized provider switching.
 - Tests include child-process protocol fixtures, the actual built SDK under browser-like globals with real permission control messages, adapter lifecycle/policy/session/block regressions, and happy-dom view tests for history/export/approvals/provider isolation. They require no credentials or network calls. Native/provider-backed evidence is recorded separately in VERIFICATION.md.
