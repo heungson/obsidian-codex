@@ -623,20 +623,14 @@ export default class CodexPlugin extends Plugin {
     return null;
   }
   async attachCapturedSelection(snapshot: NoteSelection) {
-    const gesture = selectionGesture(snapshot);
-    try {
-      const view = await this.open();
-      const current = gesture.take();
-      if (current)
-        view?.attach({
-          label: current.label,
-          text: current.text,
-          selection: true,
-        });
-      else new Notice("The note selection changed. Select the passage again.");
-    } finally {
-      gesture.dispose();
-    }
+    // The command or editor menu already captured the user's selection. Opening
+    // the chat can blur or re-render the editor, so keep that exact snapshot.
+    const view = await this.open();
+    view?.attach({
+      label: snapshot.label,
+      text: snapshot.text,
+      selection: true,
+    });
   }
   get providerLabel() {
     return this.settings.provider === "claude" ? "Claude Code" : "Codex";
@@ -865,6 +859,7 @@ class CodexView extends ItemView {
   private attachments: Attachment[] = [];
   private selectionButton!: HTMLButtonElement;
   private selectionWatch?: () => void;
+  private responseSelectionWatch?: () => void;
   private selectionIntent?: ReturnType<typeof selectionGesture>;
   private menuSelectionCleanup?: () => void;
   private pending: Json[] = [];
@@ -952,13 +947,12 @@ class CodexView extends ItemView {
       },
     });
     this.input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) {
         e.preventDefault();
-        void this.send();
+        e.stopPropagation();
+        if (!e.repeat) void this.send();
       }
     });
-    this.options = composer.createDiv({ cls: "codex-options codex-controls" });
-    this.buildOptions();
     const actionsRow = composer.createDiv({ cls: "codex-composer-actions" });
     const context = actionsRow.createDiv({ cls: "codex-actions" });
     const plus = button(
@@ -986,6 +980,10 @@ class CodexView extends ItemView {
       () => this.commandMenu(),
       "Chat commands",
     ).setAttribute("aria-label", "Chat commands");
+    this.options = actionsRow.createDiv({
+      cls: "codex-options codex-controls",
+    });
+    this.buildOptions();
     const footer = actionsRow.createDiv({
       cls: "codex-actions codex-send-row",
     });
@@ -1009,11 +1007,13 @@ class CodexView extends ItemView {
     this.plugin.client.on("request", this.serverRequest);
     this.plugin.client.on("disconnected", this.disconnect);
     this.watchNoteSelection();
+    this.watchResponseSelection();
     await this.connect();
   }
   async onClose() {
     this.closed = true;
     this.selectionWatch?.();
+    this.responseSelectionWatch?.();
     this.selectionIntent?.dispose();
     this.menuSelectionCleanup?.();
     clearTimeout(this.renderTimer);
@@ -1687,7 +1687,29 @@ class CodexView extends ItemView {
           () => void this.guard(() => this.loadEarlier()),
         ).addClass("codex-load-earlier");
       for (const t of turns) {
-        for (const item of t.items ?? []) this.putItem(item);
+        const previousGroups = new Set(
+          this.transcript.querySelectorAll(".codex-activity"),
+        );
+        const items: Json[] = t.items ?? [];
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const later = items.slice(i + 1);
+          const interim =
+            item.type === "agentMessage" &&
+            !item.phase &&
+            later.some((next) => next.type === "agentMessage") &&
+            later.some(
+              (next) =>
+                !["agentMessage", "userMessage", "plan"].includes(next.type),
+            );
+          this.putItem(item, interim);
+        }
+        for (const group of this.transcript.querySelectorAll<HTMLDetailsElement>(
+          ".codex-activity",
+        )) {
+          if (!previousGroups.has(group) && typeof t.durationMs === "number")
+            this.setWorkedDuration(group, t.durationMs);
+        }
         if (t.status === "inProgress") this.turns.accept(t.id);
       }
       if (["idle", "notLoaded", "systemError"].includes(r.thread.status?.type))
@@ -1788,6 +1810,72 @@ class CodexView extends ItemView {
       for (const ref of refs) this.app.workspace.offref(ref);
     };
     update();
+  }
+  private watchResponseSelection() {
+    const doc = this.contentEl.ownerDocument;
+    const view = doc.defaultView!;
+    const action = button(doc.body, "Add to chat", () => {
+      if (!selected) return;
+      const text = selected;
+      selected = "";
+      action.hidden = true;
+      this.attach({ label: "Agent response", text, selection: true });
+    });
+    action.addClass("codex-response-selection-action");
+    action.hidden = true;
+    let selected = "";
+    action.addEventListener("pointerdown", (event) => event.preventDefault());
+    const update = () => {
+      const selection = doc.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount !== 1) {
+        selected = "";
+        action.hidden = true;
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const parent = (node: Node) =>
+        node.nodeType === 1 ? (node as Element) : node.parentElement;
+      const start = parent(range.startContainer)?.closest(
+        ".codex-agentMessage .codex-message",
+      );
+      const end = parent(range.endContainer)?.closest(
+        ".codex-agentMessage .codex-message",
+      );
+      const text = selection.toString();
+      if (
+        !start ||
+        start !== end ||
+        !this.transcript.contains(start) ||
+        !text.trim()
+      ) {
+        selected = "";
+        action.hidden = true;
+        return;
+      }
+      selected = text;
+      const bounds = range.getBoundingClientRect();
+      action.hidden = false;
+      const actionBounds = action.getBoundingClientRect();
+      action.style.left = `${Math.max(8, Math.min(view.innerWidth - actionBounds.width - 8, bounds.left + (bounds.width - actionBounds.width) / 2))}px`;
+      action.style.top = `${Math.max(8, bounds.top - actionBounds.height - 6)}px`;
+    };
+    const hide = () => {
+      selected = "";
+      action.hidden = true;
+    };
+    doc.addEventListener("selectionchange", update);
+    doc.addEventListener("pointerup", update);
+    doc.addEventListener("keyup", update);
+    this.transcript.addEventListener("scroll", hide);
+    view.addEventListener("resize", hide);
+    this.responseSelectionWatch = () => {
+      doc.removeEventListener("selectionchange", update);
+      doc.removeEventListener("pointerup", update);
+      doc.removeEventListener("keyup", update);
+      this.transcript.removeEventListener("scroll", hide);
+      view.removeEventListener("resize", hide);
+      action.remove();
+    };
   }
   attachSelection(
     snapshot: NoteSelection | null = this.plugin.noteSelection(
@@ -1922,30 +2010,75 @@ class CodexView extends ItemView {
       }
     });
   }
-  private putItem(item: Json) {
+  private putItem(item: Json, inferredCommentary = false) {
     if (!item.id) return;
     this.transcript.querySelector(".codex-empty")?.remove();
     const existing = this.items.get(item.id);
     this.items.set(item.id, { ...existing, ...item });
+    const merged = this.items.get(item.id)!;
+    const isCommentary =
+      merged.type === "agentMessage" &&
+      (inferredCommentary ||
+        merged.phase === "commentary" ||
+        merged.phase === "partial_answer");
+    const activityParent = (before?: HTMLElement): HTMLElement => {
+      const prior = before
+        ? before.previousElementSibling
+        : this.transcript.lastElementChild;
+      let group = prior as HTMLDetailsElement | null;
+      if (!group?.classList.contains("codex-activity")) {
+        group = this.transcript.createEl("details", { cls: "codex-activity" });
+        if (this.turnId) group.dataset.turnId = this.turnId;
+        if (before) this.transcript.insertBefore(group, before);
+        group.createEl("summary");
+        group.createDiv({ cls: "codex-activity-items" });
+      }
+      return group.querySelector<HTMLElement>(".codex-activity-items")!;
+    };
+    const updateActivity = (parent: HTMLElement) => {
+      const count = parent.children.length;
+      parent
+        .parentElement!.querySelector("summary")!
+        .setText(`Worked · ${count} ${count === 1 ? "step" : "steps"}`);
+    };
+    if (isCommentary && this.rows.has(item.id)) {
+      const outer = this.rows
+        .get(item.id)!
+        .body.closest<HTMLElement>(".codex-item")!;
+      if (outer.parentElement === this.transcript) {
+        const parent = activityParent(outer);
+        parent.appendChild(outer);
+        updateActivity(parent);
+      }
+    }
     if (!this.rows.has(item.id)) {
-      const outer = this.transcript.createDiv({
+      const isMessage = ["agentMessage", "userMessage", "plan"].includes(
+        item.type,
+      );
+      let parent: HTMLElement = this.transcript;
+      if (!isMessage || isCommentary) parent = activityParent();
+      const outer = parent.createDiv({
         cls: `codex-item codex-${item.type}`,
       });
-      outer.createDiv({
-        cls: "codex-item-label",
-        text:
-          item.type === "userMessage"
-            ? "You"
-            : item.type === "agentMessage"
-              ? this.plugin.providerLabel
-              : item.type.replace(/([A-Z])/g, " $1"),
-      });
+      if (parent !== this.transcript) updateActivity(parent);
       let body: HTMLElement;
-      if (["agentMessage", "userMessage", "plan"].includes(item.type))
+      if (isMessage) {
+        outer.createDiv({
+          cls: "codex-item-label",
+          text:
+            item.type === "userMessage"
+              ? "You"
+              : item.type === "agentMessage"
+                ? this.plugin.providerLabel
+                : "Plan",
+        });
         body = outer.createDiv({ cls: "codex-message" });
-      else {
+      } else {
         const d = outer.createEl("details");
-        d.createEl("summary", { text: item.command || item.tool || item.type });
+        const label = item.type
+          .replace(/([A-Z])/g, " $1")
+          .replace(/^./, (c: string) => c.toUpperCase());
+        d.createEl("summary", { text: item.command || item.tool || label });
         body = d.createEl("pre");
       }
       const component = new Component();
@@ -1953,6 +2086,15 @@ class CodexView extends ItemView {
       this.rows.set(item.id, { body, version: 0, component });
     }
     this.scheduleRender(item.id);
+  }
+  private setWorkedDuration(group: HTMLDetailsElement, durationMs: number) {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+    const seconds = Math.round(durationMs / 1000);
+    const duration =
+      seconds < 60
+        ? `${seconds}s`
+        : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    group.querySelector("summary")?.setText(`Worked for ${duration}`);
   }
   private scheduleRender(id: string) {
     this.dirty.add(id);
@@ -2042,6 +2184,14 @@ class CodexView extends ItemView {
       this.turns.accept(p.turn.id);
       this.updateBusy();
     } else if (method === "turn/completed") {
+      if (typeof p.turn.durationMs === "number") {
+        for (const group of this.transcript.querySelectorAll<HTMLDetailsElement>(
+          ".codex-activity",
+        )) {
+          if (group.dataset.turnId === p.turn.id)
+            this.setWorkedDuration(group, p.turn.durationMs);
+        }
+      }
       this.turns.finish(p.turn.id);
       this.status.setText(
         p.turn.error?.message ?? `Turn ${p.turn.status ?? "completed"}`,

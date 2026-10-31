@@ -177,6 +177,157 @@ function click(text: string, root: ParentNode = document) {
 function event(client: FakeClient, method: string, params: any) {
   client.emit("notification", method, { threadId: "thread-1", ...params });
 }
+test("consecutive tool calls and reasoning share a collapsed activity group", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.putItem({ id: "a", type: "agentMessage", text: "Looking into it." });
+  h.view.putItem({ id: "w", type: "webSearch", query: "market" });
+  h.view.putItem({ id: "r", type: "reasoning", summary: ["Check sources"] });
+  h.view.putItem({
+    id: "c",
+    type: "commandExecution",
+    command: "ls",
+    aggregatedOutput: "files",
+  });
+  await flush();
+  const group = document.querySelector<HTMLDetailsElement>(".codex-activity")!;
+  assert.equal(group.open, false);
+  assert.equal(
+    group.querySelector(":scope > summary")!.textContent,
+    "Worked · 3 steps",
+  );
+  const summaries = [...group.querySelectorAll(".codex-item summary")].map(
+    (s) => s.textContent,
+  );
+  assert.deepEqual(summaries, ["Web Search", "Reasoning", "ls"]);
+  assert.match(group.textContent!, /market/);
+  group.open = true;
+  h.view.putItem({
+    id: "c",
+    type: "commandExecution",
+    aggregatedOutput: "updated",
+  });
+  await flush();
+  assert.equal(group.open, true);
+  assert.equal(
+    group.querySelector(":scope > summary")!.textContent,
+    "Worked · 3 steps",
+  );
+  assert.match(group.textContent!, /updated/);
+  h.view.putItem({ id: "b", type: "agentMessage", text: "Done." });
+  h.view.putItem({ id: "w2", type: "webSearch", query: "other" });
+  assert.equal(document.querySelectorAll(".codex-activity").length, 2);
+});
+test("commentary and tools fold together while the final answer stays visible", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.threadId = "thread-1";
+  event(h.client, "turn/started", { turn: { id: "turn-1" } });
+  h.view.putItem({ id: "comment", type: "agentMessage", text: "Checking" });
+  h.view.putItem({
+    id: "comment",
+    type: "agentMessage",
+    phase: "commentary",
+    text: "Checking",
+  });
+  h.view.putItem({ id: "tool", type: "commandExecution", command: "status" });
+  h.view.putItem({
+    id: "final",
+    type: "agentMessage",
+    phase: "final_answer",
+    text: "Finished",
+  });
+  event(h.client, "turn/completed", {
+    turn: { id: "turn-1", durationMs: 44000, status: "completed" },
+  });
+  await flush();
+  const group = document.querySelector<HTMLDetailsElement>(".codex-activity")!;
+  assert.equal(group.open, false);
+  assert.equal(
+    group.querySelector(":scope > summary")!.textContent,
+    "Worked for 44s",
+  );
+  assert.match(group.textContent!, /Checking/);
+  assert.match(group.textContent!, /status/);
+  assert.doesNotMatch(group.textContent!, /Finished/);
+  assert.match(group.nextElementSibling!.textContent!, /Finished/);
+});
+test("selected agent response text can be added to the composer as context", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.putItem({
+    id: "answer",
+    type: "agentMessage",
+    text: "First part. Selected excerpt. Last part.",
+  });
+  await flush();
+  const node = document.querySelector(
+    ".codex-agentMessage .codex-message div",
+  )!.firstChild!;
+  const range = document.createRange();
+  range.setStart(node, 12);
+  range.setEnd(node, 28);
+  range.getBoundingClientRect = () =>
+    ({ left: 100, top: 100, width: 100 }) as DOMRect;
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  document.dispatchEvent(new Event("selectionchange"));
+  const action = document.querySelector<HTMLButtonElement>(
+    ".codex-response-selection-action",
+  )!;
+  assert.equal(action.hidden, false);
+  action.click();
+  assert.equal(action.hidden, true);
+  assert.equal(
+    document.querySelector(".codex-excerpt-preview pre")!.textContent,
+    "Selected excerpt",
+  );
+  assert.match(
+    document.querySelector(".codex-selection-attachment")!.textContent!,
+    /Agent response/,
+  );
+  document.getSelection()!.removeAllRanges();
+  document.dispatchEvent(new Event("selectionchange"));
+  assert.equal(action.hidden, true);
+});
+test("Ctrl+Enter sends the composer message, while Enter remains available for a newline", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const input = document.querySelector<HTMLTextAreaElement>(".codex-input")!;
+  input.value = "Shortcut message";
+  const plain = new KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  input.dispatchEvent(plain);
+  assert.equal(plain.defaultPrevented, false);
+  assert.equal(
+    h.client.calls.some((call) => call.method === "turn/start"),
+    false,
+  );
+  let bubbled = false;
+  document.addEventListener(
+    "keydown",
+    () => {
+      bubbled = true;
+    },
+    { once: true },
+  );
+  const shortcut = new KeyboardEvent("keydown", {
+    key: "Enter",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  input.dispatchEvent(shortcut);
+  await flush();
+  assert.equal(shortcut.defaultPrevented, true);
+  assert.equal(bubbled, false);
+  const call = h.client.calls.find((item) => item.method === "turn/start");
+  assert.ok(call);
+  assert.match(call.params.input[0].text, /Shortcut message/);
+});
 test("plugin migrates synced foreign paths before client creation and saves local edits without overwriting the other OS", async (t) => {
   const foreign =
     process.platform === "win32"
@@ -917,6 +1068,30 @@ test("editor context menu preserves explicit source selection and original label
   root
     .querySelector(".cm-content")!
     .dispatchEvent(new Event("pointerdown", { bubbles: true }));
+});
+
+test("attaching a captured selection survives editor blur and note re-render while chat opens", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const { root, note } = noteSelectionFixture(h);
+  const command = h.plugin.commands.find((c: any) => c.id === "send-selection");
+  h.plugin.open = async () => {
+    document.getSelection()!.removeAllRanges();
+    root.querySelector(".cm-content")!.replaceChildren();
+    note.file = new host.TFile("Different.md");
+    document.dispatchEvent(new Event("selectionchange"));
+    return h.view;
+  };
+  assert.equal(command.checkCallback(false), true);
+  await flush();
+  assert.equal(
+    document.querySelector(".codex-excerpt-preview pre")!.textContent,
+    "ASTER-592",
+  );
+  assert.match(
+    document.querySelector(".codex-selection-attachment")!.textContent!,
+    /Selection verification.md/,
+  );
 });
 
 test("model picker uses actual model rows and effort radios, preserves selection, handles keyboard navigation and unsupported effort fallback", async (t) => {
