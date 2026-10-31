@@ -746,7 +746,6 @@ class CodexSettingsTab extends PluginSettingTab {
   display() {
     const { containerEl: c } = this;
     c.empty();
-    new Setting(c).setName("Codex & Claude Code").setHeading();
     c.createEl("p", {
       text: "Uses the selected installed CLI and its existing login. No credentials are stored by this plugin. Restart the connection after changing the executable or working folder.",
     });
