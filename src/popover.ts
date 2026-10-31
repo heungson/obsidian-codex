@@ -54,7 +54,7 @@ export class ComposerPopover {
     this.document.addEventListener("keydown", this.key, true);
     this.window?.addEventListener("resize", this.resize);
   }
-  show(preferredFocus?: HTMLElement, maxWidth = 320) {
+  show(preferredFocus?: HTMLElement, maxWidth = 320, alignPanel = false) {
     const anchor = this.anchor.getBoundingClientRect();
     const panel = this.boundary.getBoundingClientRect();
     const viewportWidth =
@@ -80,7 +80,7 @@ export class ComposerPopover {
     const left = Math.max(
       8,
       Math.min(
-        anchor.left,
+        alignPanel ? panel.left + 8 : anchor.left,
         Math.max(8, panel.right - width - 4),
         viewportWidth - width - 8,
       ),

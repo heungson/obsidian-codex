@@ -860,6 +860,13 @@ class CodexView extends ItemView {
   private selectionButton!: HTMLButtonElement;
   private selectionWatch?: () => void;
   private responseSelectionWatch?: () => void;
+  private composerShortcutCleanup?: () => void;
+  private skillMenu!: HTMLElement;
+  private skillRequest = 0;
+  private skillLookup?: Promise<Array<{ name: string; description: string }>>;
+  private skillResults: Array<{ name: string; description: string }> = [];
+  private skillActive = 0;
+  private skillSuppressed = false;
   private selectionIntent?: ReturnType<typeof selectionGesture>;
   private menuSelectionCleanup?: () => void;
   private pending: Json[] = [];
@@ -946,19 +953,57 @@ class CodexView extends ItemView {
         rows: "3",
       },
     });
-    this.input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!e.repeat) void this.send();
-      }
+    this.skillMenu = composer.createDiv({
+      cls: "codex-skill-menu",
+      attr: { role: "listbox", "aria-label": "Skills" },
     });
+    this.skillMenu.hidden = true;
+    this.input.addEventListener("input", () => {
+      this.skillSuppressed = false;
+      void this.updateSkillMenu();
+    });
+    this.input.addEventListener("click", () => {
+      void this.updateSkillMenu();
+    });
+    this.input.addEventListener("blur", () => this.hideSkillMenu());
+    this.input.addEventListener("keydown", (event) => this.skillKey(event));
+    let sendAfterComposition = false;
+    const finishCompositionSend = () => {
+      if (!sendAfterComposition) return;
+      sendAfterComposition = false;
+      setTimeout(() => {
+        if (!this.closed) void this.send();
+      }, 0);
+    };
+    const onComposerKeydown = (e: KeyboardEvent) => {
+      if (e.target !== this.input) return;
+      const enter = e.key === "Enter" || (e.isComposing && e.code === "Enter");
+      if (!enter || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat) return;
+      if (e.isComposing) {
+        sendAfterComposition = true;
+        this.input.blur();
+        setTimeout(finishCompositionSend, 50);
+        return;
+      }
+      void this.send();
+    };
+    const inputWindow = this.input.ownerDocument.defaultView!;
+    inputWindow.addEventListener("keydown", onComposerKeydown, true);
+    this.input.addEventListener("compositionend", finishCompositionSend);
+    this.composerShortcutCleanup = () => {
+      sendAfterComposition = false;
+      inputWindow.removeEventListener("keydown", onComposerKeydown, true);
+      this.input.removeEventListener("compositionend", finishCompositionSend);
+    };
     const actionsRow = composer.createDiv({ cls: "codex-composer-actions" });
     const context = actionsRow.createDiv({ cls: "codex-actions" });
     const plus = button(
       context,
       "+",
-      () => this.attachmentMenu(),
+      () => this.attachmentMenu(plus),
       "Attach note, selection, or file",
     );
     plus.setAttribute("aria-label", "Attach context");
@@ -1001,6 +1046,14 @@ class CodexView extends ItemView {
     );
     this.sendButton = button(footer, "Send", () => void this.send());
     this.sendButton.addClass("mod-cta");
+    this.sendButton.addClass("codex-send-icon");
+    this.sendButton.setAttribute("aria-label", "Send");
+    this.sendButton.empty();
+    setIcon(this.sendButton, "arrow-up");
+    this.stopButton.addClass("codex-stop-icon");
+    this.stopButton.setAttribute("aria-label", "Stop");
+    this.stopButton.empty();
+    setIcon(this.stopButton, "square");
     this.sendButton.title = "Send (Cmd/Ctrl + Enter)";
     this.updateBusy();
     this.plugin.client.on("notification", this.notification);
@@ -1012,8 +1065,10 @@ class CodexView extends ItemView {
   }
   async onClose() {
     this.closed = true;
+    this.hideSkillMenu();
     this.selectionWatch?.();
     this.responseSelectionWatch?.();
+    this.composerShortcutCleanup?.();
     this.selectionIntent?.dispose();
     this.menuSelectionCleanup?.();
     clearTimeout(this.renderTimer);
@@ -1053,6 +1108,8 @@ class CodexView extends ItemView {
         this.turns.reset();
         this.connectedOnce = false;
         this.models = [];
+        this.hideSkillMenu();
+        this.skillLookup = undefined;
         this.attachments = [];
         this.renderAttachments();
         this.input.value = "";
@@ -1207,7 +1264,11 @@ class CodexView extends ItemView {
             " (tool permissions; not an OS sandbox)"
           : this.accessLabel();
   }
-  private beginPicker(anchor: HTMLButtonElement, label: string) {
+  private beginPicker(
+    anchor: HTMLButtonElement,
+    label: string,
+    onClose?: () => void,
+  ) {
     if (this.turnId || this.starting || this.operation) return;
     if (this.picker) {
       const same = anchor.getAttribute("aria-expanded") === "true";
@@ -1215,6 +1276,7 @@ class CodexView extends ItemView {
       if (same) return;
     }
     const picker = new ComposerPopover(anchor, label, this.contentEl, () => {
+      onClose?.();
       if (this.picker === picker) this.picker = undefined;
       if (anchor === this.modelButton) this.refreshControlLabels();
     });
@@ -1309,6 +1371,50 @@ class CodexView extends ItemView {
       !this.starting &&
       !this.operation &&
       s.provider === providerAtOpen;
+    const power = picker.content.createDiv({ cls: "codex-power-panel" });
+    const powerHeader = power.createDiv({ cls: "codex-power-header" });
+    const reset = button(
+      powerHeader,
+      "",
+      () => {
+        const model = this.models.find((m) => m.model === s.model);
+        const options = model?.supportedReasoningEfforts ?? [];
+        const value = options.find(
+          (o: Json) => o.reasoningEffort === model?.defaultReasoningEffort,
+        )?.reasoningEffort;
+        if (!current() || !value) return;
+        s.effort = value;
+        fillEffort();
+        this.refreshControlLabels();
+        void this.plugin.save();
+      },
+      "Reset reasoning effort to model default",
+    );
+    reset.setAttribute("aria-label", "Reset reasoning effort to model default");
+    setIcon(reset, "rotate-ccw");
+    const currentEffort = powerHeader.createDiv({ cls: "codex-power-current" });
+    const effortName = currentEffort.createDiv({ cls: "codex-power-name" });
+    const chooseModel = button(
+      currentEffort,
+      "",
+      () => {
+        if (!current()) return;
+        power.hidden = true;
+        tabs.hidden = false;
+        panel.hidden = false;
+        picker.show(
+          modelButtons.find((row) => row.model.model === s.model)?.button ??
+            modelButtons[0]?.button,
+          280,
+        );
+      },
+      "Select model and provider",
+    );
+    chooseModel.addClass("codex-power-model");
+    const efforts = power.createDiv({
+      cls: "codex-effort-choices",
+      attr: { role: "radiogroup", "aria-label": "Reasoning effort" },
+    });
     const tabs = picker.content.createDiv({
       cls: "codex-provider-tabs",
       attr: { role: "tablist", "aria-label": "Provider" },
@@ -1338,15 +1444,11 @@ class CodexView extends ItemView {
         "aria-labelledby": picker.content.id + "-" + s.provider,
       },
     });
+    tabs.hidden = true;
+    panel.hidden = true;
     const list = panel.createDiv({
       cls: "codex-model-list",
       attr: { role: "listbox", "aria-label": "Model" },
-    });
-    const footer = panel.createDiv({ cls: "codex-reasoning-footer" });
-    footer.createSpan({ text: "Reasoning", cls: "codex-reasoning-label" });
-    const efforts = footer.createDiv({
-      cls: "codex-effort-choices",
-      attr: { role: "radiogroup", "aria-label": "Reasoning effort" },
     });
     const modelButtons: Array<{
       button: HTMLButtonElement;
@@ -1363,13 +1465,35 @@ class CodexView extends ItemView {
     };
     const fillEffort = () => {
       efforts.empty();
+      const activeModel = this.models.find((m) => m.model === s.model);
+      effortName.setText(
+        s.effort ? s.effort[0].toUpperCase() + s.effort.slice(1) : "Default",
+      );
+      chooseModel.setText(
+        `${activeModel?.displayName ?? s.model ?? "CLI default"} ›`,
+      );
       const options =
         this.models.find((m) => m.model === s.model)
           ?.supportedReasoningEfforts ?? [];
       if (!options.length) {
+        reset.disabled = true;
         efforts.createSpan({ text: "Not reported", cls: "codex-effort-empty" });
         return;
       }
+      reset.disabled = !options.some(
+        (option: Json) =>
+          option.reasoningEffort === activeModel?.defaultReasoningEffort,
+      );
+      const activeIndex = Math.max(
+        0,
+        options.findIndex(
+          (option: Json) => option.reasoningEffort === s.effort,
+        ),
+      );
+      efforts.style.setProperty(
+        "--codex-effort-progress",
+        `${options.length > 1 ? (activeIndex / (options.length - 1)) * 100 : 0}%`,
+      );
       const chips: HTMLButtonElement[] = [];
       for (const option of options) {
         const value = option.reasoningEffort;
@@ -1379,18 +1503,18 @@ class CodexView extends ItemView {
         const chip = button(efforts, name, () => {
           if (!current()) return;
           s.effort = value;
-          for (const choice of chips) {
-            const selected = choice.dataset.effort === value;
-            choice.setAttribute("aria-checked", String(selected));
-            choice.tabIndex = selected ? 0 : -1;
-          }
-          chip.focus();
+          fillEffort();
+          efforts
+            .querySelector<HTMLButtonElement>('[aria-checked="true"]')
+            ?.focus();
           this.refreshControlLabels();
           void this.plugin.save();
         });
         chip.addClass("codex-effort-chip");
         chip.dataset.effort = value;
         chip.setAttribute("role", "radio");
+        chip.setAttribute("aria-label", name);
+        chip.title = name;
         chip.setAttribute("aria-checked", String(value === s.effort));
         chip.tabIndex = value === s.effort ? 0 : -1;
         chips.push(chip);
@@ -1420,7 +1544,14 @@ class CodexView extends ItemView {
         refreshRows();
         fillEffort();
         this.refreshControlLabels();
-        picker.show(row, 280);
+        tabs.hidden = true;
+        panel.hidden = true;
+        power.hidden = false;
+        picker.show(
+          efforts.querySelector<HTMLElement>('[aria-checked="true"]') ??
+            chooseModel,
+          256,
+        );
         void this.plugin.save();
       });
       row.addClass("codex-model-option");
@@ -1459,9 +1590,9 @@ class CodexView extends ItemView {
     fillEffort();
     this.pickerKeyboard(efforts, '[role="radio"]', true);
     picker.show(
-      modelButtons.find((row) => row.model.model === s.model)?.button ??
-        modelButtons[0]?.button,
-      280,
+      efforts.querySelector<HTMLElement>('[aria-checked="true"]') ??
+        chooseModel,
+      256,
     );
   }
   private openModePicker() {
@@ -1554,55 +1685,238 @@ class CodexView extends ItemView {
     });
     modal.open();
   }
-  private attachmentMenu() {
+  private skillToken() {
+    const end = this.input.selectionStart;
+    if (end !== this.input.selectionEnd) return;
+    const match = this.input.value.slice(0, end).match(/(?:^|\s)\/([\w:-]*)$/);
+    if (!match) return;
+    return {
+      start: end - match[1].length - 1,
+      end,
+      query: match[1].toLowerCase(),
+    };
+  }
+  private hideSkillMenu() {
+    this.skillRequest++;
+    if (this.skillMenu) this.skillMenu.hidden = true;
+    this.input?.removeAttribute("aria-activedescendant");
+    this.input?.setAttribute("aria-expanded", "false");
+  }
+  private async updateSkillMenu() {
+    const token = this.skillToken();
+    if (
+      !token ||
+      this.skillSuppressed ||
+      this.closed ||
+      this.input.ownerDocument.activeElement !== this.input
+    ) {
+      this.hideSkillMenu();
+      return;
+    }
+    const request = ++this.skillRequest;
+    const client = this.plugin.client;
+    const provider = this.plugin.settings.provider;
+    try {
+      this.skillLookup ??= (async () => {
+        await client.connect();
+        const result = await client.request("skills/list", {
+          cwds: [this.plugin.cwd()],
+        });
+        const entries: Json[] =
+          provider === "claude"
+            ? (result.commands ?? [])
+            : (result.data ?? []).flatMap((entry: Json) => entry.skills ?? []);
+        const seen = new Set<string>();
+        return entries
+          .filter(
+            (entry: Json) =>
+              typeof entry.name === "string" &&
+              entry.enabled !== false &&
+              !seen.has(entry.name) &&
+              !!seen.add(entry.name),
+          )
+          .map((entry: Json) => ({
+            name: entry.name,
+            description:
+              entry.interface?.shortDescription ??
+              entry.shortDescription ??
+              entry.description ??
+              "",
+          }));
+      })();
+      const skills = await this.skillLookup;
+      if (
+        request !== this.skillRequest ||
+        client !== this.plugin.client ||
+        this.closed
+      )
+        return;
+      this.skillResults = skills.filter((skill) =>
+        skill.name.toLowerCase().includes(token.query),
+      );
+      this.skillActive = 0;
+      this.renderSkillMenu();
+    } catch {
+      if (request !== this.skillRequest) return;
+      this.skillLookup = undefined;
+      this.skillResults = [];
+      this.renderSkillMenu("Could not load skills");
+    }
+  }
+  private renderSkillMenu(message = "No matching skills") {
+    this.skillMenu.empty();
+    this.skillMenu.createDiv({ cls: "codex-skill-heading", text: "Skills" });
+    if (!this.skillResults.length)
+      this.skillMenu.createDiv({ cls: "codex-skill-empty", text: message });
+    this.skillResults.forEach((skill, index) => {
+      const row = this.skillMenu.createDiv({
+        cls: "codex-skill-option",
+        attr: {
+          role: "option",
+          id: `codex-skill-${index}`,
+          "aria-selected": String(index === this.skillActive),
+        },
+      });
+      row.createSpan({ cls: "codex-skill-name", text: `/${skill.name}` });
+      row.createSpan({
+        cls: "codex-skill-description",
+        text: skill.description,
+      });
+      row.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        this.chooseSkill(index);
+      });
+    });
+    this.skillMenu.hidden = false;
+    this.input.setAttribute("aria-expanded", "true");
+    if (this.skillResults.length)
+      this.input.setAttribute(
+        "aria-activedescendant",
+        `codex-skill-${this.skillActive}`,
+      );
+  }
+  private chooseSkill(index: number) {
+    const token = this.skillToken();
+    const skill = this.skillResults[index];
+    if (!token || !skill) return;
+    const prefix = this.plugin.settings.provider === "codex" ? "$" : "/";
+    this.input.setRangeText(
+      `${prefix}${skill.name} `,
+      token.start,
+      token.end,
+      "end",
+    );
+    this.skillSuppressed = true;
+    this.hideSkillMenu();
+    this.input.focus();
+  }
+  private skillKey(event: KeyboardEvent) {
+    if (
+      this.skillMenu.hidden ||
+      event.isComposing ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey
+    )
+      return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.skillSuppressed = true;
+      this.hideSkillMenu();
+    } else if (
+      (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+      this.skillResults.length
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.skillActive =
+        (this.skillActive +
+          (event.key === "ArrowDown" ? 1 : -1) +
+          this.skillResults.length) %
+        this.skillResults.length;
+      this.renderSkillMenu();
+      this.skillMenu
+        .querySelector('[aria-selected="true"]')
+        ?.scrollIntoView({ block: "nearest" });
+    } else if (
+      (event.key === "Enter" || event.key === "Tab") &&
+      this.skillResults.length
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.chooseSkill(this.skillActive);
+    }
+  }
+  private attachmentMenu(anchor: HTMLButtonElement) {
     this.menuSelectionCleanup?.();
     const gesture =
       this.selectionIntent ??
       selectionGesture(this.plugin.noteSelection(this.contentEl.ownerDocument));
     this.selectionIntent = undefined;
     this.menuSelectionCleanup = gesture.dispose;
-    const menu = new Menu();
-    menu.onHide(() => {
+    const picker = this.beginPicker(anchor, "Add context", () => {
       gesture.dispose();
       if (this.menuSelectionCleanup === gesture.dispose)
         this.menuSelectionCleanup = undefined;
     });
-    menu.addItem((i) =>
-      i.setTitle("Attach active note").onClick(() => void this.attachActive()),
+    if (!picker) {
+      gesture.dispose();
+      this.menuSelectionCleanup = undefined;
+      return;
+    }
+    picker.content.addClass("codex-add-menu");
+    picker.content.createDiv({ cls: "codex-add-heading", text: "Add" });
+    const item = (
+      title: string,
+      description: string,
+      icon: string,
+      action: () => void,
+    ) => {
+      const row = button(picker.content, "", action);
+      row.addClass("codex-add-item");
+      row.setAttribute("aria-label", title);
+      const symbol = row.createSpan({ cls: "codex-add-icon" });
+      setIcon(symbol, icon);
+      row.createSpan({ cls: "codex-add-label", text: title });
+      row.createSpan({ cls: "codex-add-description", text: description });
+      return row;
+    };
+    const first = item(
+      "File or image",
+      "Attach from your vault",
+      "paperclip",
+      () => {
+        picker.close(false);
+        new FilePicker(
+          this.app,
+          (f) => void this.guard(() => this.attachFile(f)),
+        ).open();
+      },
     );
-    menu.addItem((i) =>
-      i.setTitle("Attach selection").onClick(() => {
-        const snapshot = gesture.take();
-        if (snapshot) this.attachSelection(snapshot);
-        else new Notice("Select text in a note first.");
-      }),
-    );
-    menu.addItem((i) =>
-      i
-        .setTitle("Attach file or image")
-        .onClick(() =>
-          new FilePicker(
-            this.app,
-            (f) => void this.guard(() => this.attachFile(f)),
-          ).open(),
-        ),
-    );
-    menu.showAtMouseEvent(
-      new MouseEvent("click", {
-        clientX: this.input.getBoundingClientRect().left,
-        clientY: this.input.getBoundingClientRect().bottom,
-      }),
-    );
+    item("Active note", "Attach the current note", "file-text", () => {
+      picker.close(false);
+      void this.attachActive();
+    });
+    item("Selection", "Attach selected note text", "text-select", () => {
+      const snapshot = gesture.take();
+      picker.close(false);
+      if (snapshot) this.attachSelection(snapshot);
+      else new Notice("Select text in a note first.");
+    });
+    picker.show(first, Number.MAX_SAFE_INTEGER, true);
   }
   private updateBusy() {
     const busy = !!this.turnId || this.starting || this.operation;
-    this.sendButton?.setText(
-      this.turnId
-        ? this.plugin.settings.provider === "claude"
-          ? "Running"
-          : "Steer"
-        : "Send",
-    );
+    const sendLabel = this.turnId
+      ? this.plugin.settings.provider === "claude"
+        ? "Running"
+        : "Steer"
+      : "Send";
+    this.sendButton?.setAttribute("aria-label", sendLabel);
+    if (this.sendButton)
+      this.sendButton.title =
+        sendLabel === "Send" ? "Send (Cmd/Ctrl + Enter)" : sendLabel;
     if (this.sendButton)
       this.sendButton.disabled =
         this.starting ||
@@ -1948,6 +2262,7 @@ class CodexView extends ItemView {
   private async send() {
     const prompt = this.input.value.trim();
     if (!prompt || this.starting || this.operation) return;
+    this.hideSkillMenu();
     if (this.localCommand(prompt)) {
       this.input.value = "";
       return;

@@ -328,6 +328,33 @@ test("Ctrl+Enter sends the composer message, while Enter remains available for a
   assert.ok(call);
   assert.match(call.params.input[0].text, /Shortcut message/);
 });
+test("Ctrl+Enter during IME composition sends the final composed text once", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const input = document.querySelector<HTMLTextAreaElement>(".codex-input")!;
+  input.value = "한";
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Process",
+      code: "Enter",
+      ctrlKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  assert.equal(
+    h.client.calls.some((call) => call.method === "turn/start"),
+    false,
+  );
+  input.dispatchEvent(new Event("compositionend"));
+  input.value = "한국어";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await flush();
+  const turns = h.client.calls.filter((call) => call.method === "turn/start");
+  assert.equal(turns.length, 1);
+  assert.match(turns[0].params.input[0].text, /한국어/);
+});
 test("plugin migrates synced foreign paths before client creation and saves local edits without overwriting the other OS", async (t) => {
   const foreign =
     process.platform === "win32"
@@ -368,8 +395,8 @@ test("compact pickers retain choices, dismiss with keyboard/outside focus, and c
   assert.equal(document.querySelectorAll(".codex-options select").length, 0);
   model.click();
   assert.equal(model.getAttribute("aria-expanded"), "true");
-  assert.equal(document.activeElement?.getAttribute("role"), "option");
-  assert.equal(document.activeElement?.getAttribute("aria-selected"), "true");
+  assert.equal(document.activeElement?.getAttribute("role"), "radio");
+  assert.equal(document.activeElement?.getAttribute("aria-checked"), "true");
   document.activeElement!.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
   );
@@ -707,7 +734,7 @@ test("real CLI review lifecycle with differing response and runtime IDs unlocks 
       document.querySelector(
         ".codex-send-row button:last-child",
       ) as HTMLButtonElement
-    ).textContent,
+    ).getAttribute("aria-label"),
     "Steer",
   );
   event(h.client, "item/completed", {
@@ -728,7 +755,7 @@ test("real CLI review lifecycle with differing response and runtime IDs unlocks 
     document.querySelectorAll(".codex-send-row button"),
   ) as HTMLButtonElement[];
   assert.equal(buttons[0].disabled, true);
-  assert.equal(buttons[1].textContent, "Send");
+  assert.equal(buttons[1].getAttribute("aria-label"), "Send");
   assert.equal(buttons[1].disabled, false);
   assert.equal(
     document.querySelector(".codex-status")?.textContent,
@@ -758,7 +785,7 @@ test("authoritative idle clears stale review busy state before completion notifi
       document.querySelector(
         ".codex-send-row button:last-child",
       ) as HTMLButtonElement
-    ).textContent,
+    ).getAttribute("aria-label"),
     "Send",
   );
   event(h.client, "turn/completed", {
@@ -992,10 +1019,55 @@ test("+ menu retains only its current pointerdown selection despite UI focus col
   document.getSelection()!.removeAllRanges();
   document.dispatchEvent(new Event("selectionchange"));
   plus.click();
-  click("Attach selection", document.querySelector(".test-menu")!);
+  click("Selection", document.querySelector(".codex-add-menu")!);
   assert.equal(
     document.querySelector(".codex-excerpt-preview pre")!.textContent,
     "ASTER-592",
+  );
+});
+test("slash skill autocomplete filters discovered Codex skills and inserts the provider syntax", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.client.handler = (method) =>
+    method === "skills/list"
+      ? {
+          data: [
+            {
+              skills: [
+                { name: "alpha", description: "First", enabled: true },
+                { name: "beta", description: "Second", enabled: true },
+                { name: "disabled", enabled: false },
+              ],
+            },
+          ],
+        }
+      : undefined;
+  const input = document.querySelector("textarea") as HTMLTextAreaElement;
+  input.focus();
+  input.value = "Please /be";
+  input.setSelectionRange(input.value.length, input.value.length);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await flush();
+  assert.equal(document.querySelectorAll(".codex-skill-option").length, 1);
+  assert.match(
+    document.querySelector(".codex-skill-option")!.textContent!,
+    /beta/,
+  );
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  assert.equal(input.value, "Please $beta ");
+  assert.equal(
+    (document.querySelector(".codex-skill-menu") as HTMLElement).hidden,
+    true,
+  );
+  assert.equal(
+    h.client.calls.filter((c) => c.method === "turn/start").length,
+    0,
   );
 });
 test("palette captures source label before asynchronous chat opening and remains available for note DOM selection while chat is focused", async (t) => {
@@ -1143,6 +1215,8 @@ test("model picker uses actual model rows and effort radios, preserves selection
   assert.equal(popup.querySelectorAll("select").length, 0);
   assert.equal(popup.querySelector(".codex-picker-title"), null);
   assert.equal(trigger.hasAttribute("title"), false);
+  assert.equal(popup.querySelector(".codex-power-name")!.textContent, "High");
+  popup.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   const rows = Array.from(
     popup.querySelectorAll<HTMLButtonElement>('[role="option"]'),
   );
@@ -1175,6 +1249,7 @@ test("model picker uses actual model rows and effort radios, preserves selection
   );
   assert.equal(h.plugin.settings.effort, "low");
   assert.equal(document.activeElement?.getAttribute("aria-checked"), "true");
+  popup.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   rows[2].click();
   await flush();
   assert.equal(h.plugin.settings.model, "seven-efforts");
@@ -1187,9 +1262,11 @@ test("model picker uses actual model rows and effort radios, preserves selection
   assert.equal(h.app.savedSettings.effort, "high");
   assert.match(trigger.textContent!, /High/);
   assert.equal(trigger.hasAttribute("title"), false);
-  high.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-  );
+  popup
+    .querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]')!
+    .dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
   assert.equal(document.activeElement, trigger);
   assert.ok(trigger.title);
 });
@@ -1197,6 +1274,11 @@ test("unlisted saved model stays checked without invented effort options until e
   const h = await harness({ model: "custom-cli-model", effort: "xhigh" });
   t.after(() => h.view.onClose());
   (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  assert.equal(
+    document.querySelectorAll('.codex-model-picker [role="radio"]').length,
+    0,
+  );
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   const selected = document.querySelector<HTMLButtonElement>(
     '[role="option"][aria-selected="true"]',
   )!;
@@ -1241,6 +1323,7 @@ test("provider tabs use manual keyboard activation, lock during switch, reopen w
   h.plugin.createClient = () =>
     h.plugin.settings.provider === "claude" ? claude : h.client;
   (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   const codex = document.querySelector<HTMLButtonElement>(
     '[role="tab"][aria-selected="true"]',
   )!;
@@ -1261,6 +1344,7 @@ test("provider tabs use manual keyboard activation, lock during switch, reopen w
   );
   await flush();
   assert.equal(h.plugin.settings.provider, "claude");
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   assert.equal(
     document.querySelector('[role="tab"][aria-selected="true"]')!.textContent,
     "Claude",
@@ -1284,6 +1368,7 @@ test("slow provider switch never reopens picker over an intervening action, and 
   };
   h.plugin.createClient = () => claude;
   (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   const stale = document.querySelector<HTMLButtonElement>('[role="option"]')!;
   document.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
   await new Promise((resolve) => setImmediate(resolve));
@@ -1308,6 +1393,7 @@ test("failed provider connection does not reopen a model picker and fallback use
   ];
   h.view.buildOptions();
   (document.querySelector(".codex-model-trigger") as HTMLButtonElement).click();
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   (
     document.querySelector(
       '[role="option"][data-model="restricted"]',
@@ -1320,6 +1406,7 @@ test("failed provider connection does not reopen a model picker and fallback use
     throw new Error("CLI unavailable");
   };
   h.plugin.createClient = () => claude;
+  document.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   document.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1].click();
   await flush();
   assert.equal(document.querySelector(".codex-model-picker"), null);
@@ -1370,6 +1457,7 @@ test("model changes remeasure picker height and preserve the anchor when effort 
   });
   trigger.click();
   const popup = document.querySelector<HTMLElement>(".codex-model-picker")!;
+  popup.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   Object.defineProperty(popup, "scrollHeight", {
     configurable: true,
     get: () => (popup.querySelectorAll('[role="radio"]').length ? 300 : 180),
@@ -1382,10 +1470,15 @@ test("model changes remeasure picker height and preserve the anchor when effort 
   )!;
   many.click();
   assert.equal(popup.style.top, "294px");
-  assert.equal(document.activeElement, many);
+  assert.equal(document.activeElement?.getAttribute("role"), "radio");
+  popup.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   none.click();
   assert.equal(popup.style.top, "414px");
-  assert.equal(document.activeElement, none);
+  assert.equal(
+    document.activeElement,
+    popup.querySelector(".codex-power-model"),
+  );
+  popup.querySelector<HTMLButtonElement>(".codex-power-model")!.click();
   many.click();
   assert.equal(popup.style.top, "294px");
   assert.equal(document.querySelector(".codex-model-picker"), popup);
