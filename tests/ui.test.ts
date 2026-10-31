@@ -38,6 +38,10 @@ function setupDOM() {
       writable: true,
       value: (window as any)[key],
     });
+  Object.defineProperty(globalThis, "activeDocument", {
+    configurable: true,
+    get: () => window.document,
+  });
   const proto = window.HTMLElement.prototype as any;
   proto.createEl = function (tag: string, options: any = {}) {
     const el = this.ownerDocument.createElement(tag);

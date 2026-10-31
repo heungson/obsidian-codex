@@ -1,0 +1,35 @@
+name: Build and attest release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --omit=optional
+      - run: npm rebuild esbuild
+      - name: Verify version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node -e 'if (!/^\d+\.\d+\.\d+$/.test(process.env.RELEASE_TAG) || require("./manifest.json").version !== process.env.RELEASE_TAG || require("./package.json").version !== process.env.RELEASE_TAG) process.exit(1)'
+      - run: npm run check
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css

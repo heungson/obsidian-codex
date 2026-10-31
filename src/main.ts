@@ -624,7 +624,7 @@ export default class CodexPlugin extends Plugin {
     });
   }
   noteSelection(
-    document: Document = globalThis.document,
+    document: Document = activeDocument,
   ): NoteSelection | null {
     const views = this.app.workspace
       .getLeavesOfType("markdown")
@@ -1099,7 +1099,9 @@ class CodexView extends ItemView {
           p.id,
           `${this.plugin.providerLabel} panel closed`,
         );
-      } catch {}
+      } catch {
+        // The provider may already be disconnected while the panel closes.
+      }
     }
     this.pending = [];
     this.plugin.client.off("notification", this.notification);
@@ -3020,7 +3022,7 @@ class CodexView extends ItemView {
         await this.app.vault.createFolder(folder);
       const date = new Date().toISOString().replace(/[:.]/g, "-");
       const title = (this.title.textContent ?? "Codex")
-        .replace(/[\\/:*?"<>|#\[\]]/g, "")
+        .replace(/[\\/:*?"<>|#[\]]/g, "")
         .slice(0, 60);
       const contents = `# ${title}\n\nExported ${new Date().toLocaleString()}\n\nProvider: ${this.plugin.providerLabel}\n\nThread: ${this.threadId}\n\n${exportItems.map((i) => `## ${i.type === "userMessage" ? "You" : i.type === "agentMessage" ? this.plugin.providerLabel : i.type}\n\n${["agentMessage", "userMessage", "plan"].includes(i.type) ? itemText(i) : "```text\n" + itemText(i).replace(/```/g, "ˋˋˋ") + "\n```"}`).join("\n\n")}`;
       const f = await this.app.vault.create(

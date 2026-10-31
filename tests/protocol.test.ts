@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CodexClient,
   RpcError,
@@ -106,7 +108,7 @@ test("process exit rejects pending request rather than waiting for timeout", asy
 });
 test("missing executable fails without unhandled child errors", async (t) => {
   const c = new CodexClient(
-    () => "/nonexistent/codex",
+    () => join(tmpdir(), "obsidian-codex-nonexistent", "codex"),
     () => process.cwd(),
   );
   t.after(() => c.disconnect());

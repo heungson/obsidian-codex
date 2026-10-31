@@ -112,10 +112,11 @@ function runtime() {
   return { queries, sdk: sdk as unknown as ClaudeRuntime };
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+const installedClaude = join(tmpdir(), "installed", "claude");
 async function setup() {
   const r = runtime();
   const client = new ClaudeClient(
-    () => "/installed/claude",
+    () => installedClaude,
     () => process.cwd(),
     () => r.sdk,
   );
@@ -142,7 +143,7 @@ test("Claude adapter streams text, closes completed query promptly, preserves ex
   const notifications: any[] = [];
   h.client.on("notification", (method, p) => notifications.push({ method, p }));
   const { query } = await run(h);
-  assert.equal(query.options.pathToClaudeCodeExecutable, "/installed/claude");
+  assert.equal(query.options.pathToClaudeCodeExecutable, installedClaude);
   assert.deepEqual(query.options.settingSources, ["user", "project", "local"]);
   assert.equal(query.options.systemPrompt.preset, "claude_code");
   assert.equal(query.options.permissionMode, "plan");

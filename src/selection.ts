@@ -119,7 +119,7 @@ export function captureEditorSelection(
   const text = editor?.getSelection();
   if (!path || !text?.trim() || !editor) return null;
   const root = info.contentEl ?? info.containerEl;
-  const document = root?.ownerDocument ?? globalThis.document;
+  const document = root?.ownerDocument ?? activeDocument;
   const from = editor.getCursor?.("from"),
     to = editor.getCursor?.("to");
   return {

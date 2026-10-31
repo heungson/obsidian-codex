@@ -187,7 +187,7 @@ export class CodexClient extends EventEmitter {
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
@@ -203,8 +203,9 @@ export class CodexClient extends EventEmitter {
   private write(message: Json) {
     if (!this.child || this.child.killed || !this.child.stdin.writable)
       throw new Error("Codex is disconnected");
+    const generation = this.generation;
     this.child.stdin.write(JSON.stringify(message) + "\n", (error) => {
-      if (error) this.fail(error);
+      if (error && generation === this.generation) this.fail(error);
     });
   }
   private fail(error: Error) {
