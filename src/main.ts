@@ -34,7 +34,7 @@ import {
   type Attachment,
 } from "./session";
 import { enumOptions, validateFormValue } from "./forms";
-import { ClaudeClient, type ClaudeRuntime } from "./claude";
+import { ClaudeClient } from "./claude";
 import { embeddedClaudeRuntime } from "./embedded-claude";
 import {
   loadPlatformPaths,
@@ -147,7 +147,6 @@ import {
   captureEditorSelection,
   selectionGesture,
   type NoteSelection,
-  type SelectionView,
 } from "./selection";
 const VIEW = "obsidian-codex-chat";
 interface Settings {
@@ -1504,7 +1503,7 @@ class CodexView extends ItemView {
   }
   private pickerSelect(parent: HTMLElement, label: string) {
     const field = parent.createEl("label", { cls: "codex-picker-field" });
-    field.createEl("span", { text: label });
+    field.createSpan({ text: label });
     return field.createEl("select", { attr: { "aria-label": label } });
   }
   private pickerKeyboard(
@@ -1814,7 +1813,7 @@ class CodexView extends ItemView {
     const picker = this.beginPicker(this.modeButton, "Mode and permissions");
     if (!picker) return;
     const s = this.plugin.settings;
-    picker.content.createEl("div", {
+    picker.content.createDiv({
       text: "Mode & permissions",
       cls: "codex-picker-title",
     });

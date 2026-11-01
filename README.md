@@ -125,7 +125,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check          # typecheck, production builds, transport/adapter/view tests
 npm run dev            # watch the plugin
-npm run bundle         # dist/codex-agent-chat-0.5.2.zip
+npm run bundle         # dist/codex-agent-chat-0.5.3.zip
 ```
 
 `npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The JavaScript SDK is embedded in `main.js` with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.
