@@ -210,6 +210,81 @@ test("Claude images are read through the vault and reject files outside it", asy
     /10 MiB/,
   );
 });
+test("pasted clipboard images are saved in the vault and sent as image input", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.plugin.settings.model = "gpt-6.1-sol";
+  let savedBytes: number[] = [];
+  h.app.fileManager = {
+    getAvailablePathForAttachment: async (name: string) =>
+      `attachments/${name}`,
+  };
+  h.app.vault.createBinary = async (path: string, data: ArrayBuffer) => {
+    savedBytes = Array.from(new Uint8Array(data));
+    const file = new host.TFile(path);
+    h.files.set(path, file);
+    return file;
+  };
+  const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+  const paste = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, "clipboardData", {
+    value: {
+      items: [
+        {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => ({
+            type: "image/png",
+            size: 3,
+            arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+          }),
+        },
+      ],
+      getData: () => "Describe this",
+    },
+  });
+  input.dispatchEvent(paste);
+  assert.equal(paste.defaultPrevented, true);
+  await flush();
+  assert.deepEqual(savedBytes, [1, 2, 3]);
+  assert.match(
+    document.querySelector(".codex-attachment")!.textContent!,
+    /Pasted image.*\.png.*image/,
+  );
+  assert.equal(input.value, "Describe this");
+  click("Send");
+  await flush();
+  const call = h.client.calls.find((c) => c.method === "turn/start")!;
+  assert.equal(call.params.input[1].type, "localImage");
+  assert.match(call.params.input[1].path, /attachments\/Pasted image.*\.png$/);
+});
+test("image paste rejects unsupported or oversized images without saving them", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.plugin.settings.model = "gpt-6.1-sol";
+  let writes = 0;
+  h.app.fileManager = { getAvailablePathForAttachment: async () => "x.png" };
+  h.app.vault.createBinary = async () => {
+    writes++;
+  };
+  const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+  for (const file of [
+    { type: "image/tiff", size: 1 },
+    { type: "image/png", size: 11 * 1024 * 1024 },
+  ]) {
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        items: [{ kind: "file", type: file.type, getAsFile: () => file }],
+        getData: () => "",
+      },
+    });
+    input.dispatchEvent(paste);
+    await flush();
+  }
+  assert.equal(writes, 0);
+  assert.equal(document.querySelectorAll(".codex-attachment").length, 0);
+});
 test("consecutive tool calls and reasoning share a collapsed activity group", async (t) => {
   const h = await harness();
   t.after(() => h.view.onClose());
@@ -232,7 +307,16 @@ test("consecutive tool calls and reasoning share a collapsed activity group", as
   const summaries = [...group.querySelectorAll(".codex-item summary")].map(
     (s) => s.textContent,
   );
-  assert.deepEqual(summaries, ["Web Search", "Reasoning", "ls"]);
+  assert.deepEqual(summaries, ["Web Search", "Ran ls"]);
+  assert.equal(group.querySelector(".codex-reasoning details"), null);
+  assert.match(
+    group.querySelector(".codex-reasoning")!.textContent!,
+    /Check sources/,
+  );
+  const commands = group.querySelector<HTMLDetailsElement>(
+    ".codex-command-group",
+  )!;
+  assert.equal(commands.open, false);
   assert.match(group.textContent!, /market/);
   group.open = true;
   h.view.putItem({
@@ -250,6 +334,52 @@ test("consecutive tool calls and reasoning share a collapsed activity group", as
   h.view.putItem({ id: "b", type: "agentMessage", text: "Done." });
   h.view.putItem({ id: "w2", type: "webSearch", query: "other" });
   assert.equal(document.querySelectorAll(".codex-activity").length, 2);
+});
+test("consecutive commands are grouped and retain their output when expanded", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  h.view.putItem({ id: "r", type: "reasoning", summary: ["Checking files"] });
+  h.view.putItem({
+    id: "c1",
+    type: "commandExecution",
+    command: "first",
+    aggregatedOutput: "one",
+  });
+  h.view.putItem({
+    id: "c2",
+    type: "commandExecution",
+    command: "second",
+    aggregatedOutput: "two",
+  });
+  await flush();
+  const activity =
+    document.querySelector<HTMLDetailsElement>(".codex-activity")!;
+  activity.open = true;
+  const commands = activity.querySelector<HTMLDetailsElement>(
+    ".codex-command-group",
+  )!;
+  assert.equal(
+    commands.querySelector(":scope > summary")!.textContent,
+    "Ran commands",
+  );
+  assert.equal(commands.open, false);
+  assert.equal(commands.querySelectorAll(".codex-commandExecution").length, 2);
+  commands.open = true;
+  const first = commands.querySelector<HTMLDetailsElement>(
+    ".codex-commandExecution details",
+  )!;
+  assert.equal(first.open, false);
+  first.open = true;
+  assert.match(first.textContent!, /one/);
+  h.view.putItem({
+    id: "c1",
+    type: "commandExecution",
+    aggregatedOutput: "new output",
+  });
+  await flush();
+  assert.equal(commands.open, true);
+  assert.equal(first.open, true);
+  assert.match(first.textContent!, /new output/);
 });
 test("commentary and tools fold together while the final answer stays visible", async (t) => {
   const h = await harness();
@@ -564,6 +694,41 @@ test("view sends note snapshot with explicit read-only/plan policies; completion
     document.querySelector(".codex-userMessage details")!.hasAttribute("open"),
     false,
   );
+});
+test("composer switches between send, stop, and steering during a turn", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  await h.view.ensureThread();
+  const stop = document.querySelector<HTMLButtonElement>(".codex-stop-icon")!;
+  const send = document.querySelector<HTMLButtonElement>(".codex-send-icon")!;
+  const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+  assert.equal(stop.hidden, true);
+  assert.equal(send.hidden, false);
+  event(h.client, "turn/started", { turn: { id: "turn-1" } });
+  assert.equal(stop.hidden, false);
+  assert.equal(stop.disabled, false);
+  assert.equal(send.hidden, true);
+  stop.click();
+  await flush();
+  assert.deepEqual(
+    h.client.calls.find((c) => c.method === "turn/interrupt")?.params,
+    { threadId: "thread-1", turnId: "turn-1" },
+  );
+  input.value = "Follow up";
+  input.dispatchEvent(new Event("input"));
+  assert.equal(stop.hidden, true);
+  assert.equal(send.hidden, false);
+  assert.equal(send.getAttribute("aria-label"), "Steer");
+  send.click();
+  await flush();
+  assert.ok(h.client.calls.some((c) => c.method === "turn/steer"));
+  assert.equal(stop.hidden, false);
+  event(h.client, "turn/completed", {
+    turn: { id: "turn-1", status: "completed" },
+  });
+  assert.equal(stop.hidden, true);
+  assert.equal(send.hidden, false);
+  assert.equal(send.getAttribute("aria-label"), "Send");
 });
 test("history searches working folder and resumes selected paginated conversation", async (t) => {
   const h = await harness();

@@ -1088,6 +1088,7 @@ class CodexView extends ItemView {
   }
   private starting = false;
   private operation = false;
+  private pastingImages = false;
   private items = new Map<string, ChatItem>();
   private rows = new Map<
     string,
@@ -1200,7 +1201,9 @@ class CodexView extends ItemView {
     this.input.addEventListener("input", () => {
       this.skillSuppressed = false;
       void this.updateSkillMenu();
+      this.updateBusy();
     });
+    this.input.addEventListener("paste", (event) => this.pasteImages(event));
     this.input.addEventListener("click", () => {
       void this.updateSkillMenu();
     });
@@ -1293,6 +1296,7 @@ class CodexView extends ItemView {
     this.sendButton.empty();
     setIcon(this.sendButton, "arrow-up");
     this.stopButton.addClass("codex-stop-icon");
+    this.stopButton.title = "Stop";
     this.stopButton.setAttribute("aria-label", "Stop");
     this.stopButton.empty();
     setIcon(this.stopButton, "square");
@@ -2062,6 +2066,7 @@ class CodexView extends ItemView {
     );
     this.skillSuppressed = true;
     this.hideSkillMenu();
+    this.updateBusy();
     this.input.focus();
   }
   private skillKey(event: KeyboardEvent) {
@@ -2162,6 +2167,8 @@ class CodexView extends ItemView {
   }
   private updateBusy() {
     const busy = !!this.turnId || this.starting || this.operation;
+    const canSteer = !!this.turnId && this.plugin.settings.provider === "codex";
+    const showStop = busy && !(canSteer && !!this.input?.value.trim());
     const sendLabel = this.turnId
       ? this.plugin.settings.provider === "claude"
         ? "Running"
@@ -2171,16 +2178,22 @@ class CodexView extends ItemView {
     if (this.sendButton)
       this.sendButton.title =
         sendLabel === "Send" ? "Send (Cmd/Ctrl + Enter)" : sendLabel;
-    if (this.sendButton)
+    if (this.sendButton) {
+      this.sendButton.hidden = showStop;
       this.sendButton.disabled =
         this.starting ||
         this.operation ||
+        this.pastingImages ||
         (!!this.turnId && this.plugin.settings.provider === "claude");
-    if (this.stopButton) this.stopButton.disabled = !this.turnId;
+    }
+    if (this.stopButton) {
+      this.stopButton.hidden = !showStop;
+      this.stopButton.disabled = !this.turnId;
+    }
     if (busy) this.picker?.close(false);
     this.options
       ?.querySelectorAll("button")
-      .forEach((e) => (e.disabled = busy));
+      .forEach((e) => (e.disabled = busy || this.pastingImages));
   }
   private clearRows() {
     for (const row of this.rows.values()) row.component.unload();
@@ -2513,6 +2526,75 @@ class CodexView extends ItemView {
       this.attach({ label: f.path, imagePath: adapter.getFullPath(f.path) });
     } else this.attach({ label: f.path, text: await this.app.vault.read(f) });
   }
+  private pasteImages(event: ClipboardEvent) {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const images = Array.from(clipboard.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (!images.length) return;
+    event.preventDefault();
+    const text = clipboard.getData("text/plain");
+    if (text) {
+      this.input.setRangeText(
+        text,
+        this.input.selectionStart,
+        this.input.selectionEnd,
+        "end",
+      );
+      this.input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (this.pastingImages) {
+      new Notice("Wait for the current image paste to finish.");
+      return;
+    }
+    this.pastingImages = true;
+    this.updateBusy();
+    void this.guard(async () => {
+      try {
+        const extensions: Record<string, string> = {
+          "image/png": "png",
+          "image/jpeg": "jpg",
+          "image/gif": "gif",
+          "image/webp": "webp",
+        };
+        const model = this.models.find(
+          (m) => m.model === this.plugin.settings.model,
+        );
+        if (!model?.inputModalities?.includes("image"))
+          throw new Error(
+            "The selected model does not advertise image input. Select an image-capable model first.",
+          );
+        if (!(this.app.vault.adapter instanceof FileSystemAdapter))
+          throw new Error("Image attachments require a local vault.");
+        if (
+          this.attachments.filter((a) => a.imagePath).length + images.length >
+          8
+        )
+          throw new Error("Attach up to eight images per message.");
+        for (const image of images) {
+          if (!extensions[image.type])
+            throw new Error("Paste a PNG, JPEG, GIF, or WebP image.");
+          if (image.size > 10 * 1024 * 1024)
+            throw new Error("Choose an image smaller than 10 MiB.");
+        }
+        for (const image of images) {
+          const path = await this.app.fileManager.getAvailablePathForAttachment(
+            `Pasted image ${Date.now()}.${extensions[image.type]}`,
+          );
+          const file = await this.app.vault.createBinary(
+            path,
+            await image.arrayBuffer(),
+          );
+          if (!this.closed) await this.attachFile(file);
+        }
+      } finally {
+        this.pastingImages = false;
+        if (!this.closed) this.updateBusy();
+      }
+    });
+  }
   private renderAttachments() {
     this.attachmentsEl.empty();
     for (const [index, a] of this.attachments.entries()) {
@@ -2547,10 +2629,18 @@ class CodexView extends ItemView {
   }
   private async send() {
     const prompt = this.input.value.trim();
-    if (!prompt || this.starting || this.operation) return;
+    if (
+      !prompt ||
+      this.starting ||
+      this.operation ||
+      this.pastingImages ||
+      (this.turnId && this.plugin.settings.provider === "claude")
+    )
+      return;
     this.hideSkillMenu();
     if (this.localCommand(prompt)) {
       this.input.value = "";
+      this.updateBusy();
       return;
     }
     await this.guard(async () => {
@@ -2642,7 +2732,7 @@ class CodexView extends ItemView {
       return group.querySelector<HTMLElement>(".codex-activity-items")!;
     };
     const updateActivity = (parent: HTMLElement) => {
-      const count = parent.children.length;
+      const count = parent.querySelectorAll(".codex-item").length;
       parent
         .parentElement!.querySelector("summary")!
         .setText(`Worked · ${count} ${count === 1 ? "step" : "steps"}`);
@@ -2663,7 +2753,19 @@ class CodexView extends ItemView {
       );
       let parent: HTMLElement = this.transcript;
       if (!isMessage || isCommentary) parent = activityParent();
-      const outer = parent.createDiv({
+      let itemParent = parent;
+      if (item.type === "commandExecution") {
+        let commands = parent.lastElementChild as HTMLDetailsElement | null;
+        if (!commands?.classList.contains("codex-command-group")) {
+          commands = parent.createEl("details", { cls: "codex-command-group" });
+          commands.createEl("summary", { text: "Ran commands" });
+          commands.createDiv({ cls: "codex-command-items" });
+        }
+        itemParent = commands.querySelector<HTMLElement>(
+          ".codex-command-items",
+        )!;
+      }
+      const outer = itemParent.createDiv({
         cls: `codex-item codex-${item.type}`,
       });
       if (parent !== this.transcript) updateActivity(parent);
@@ -2679,12 +2781,19 @@ class CodexView extends ItemView {
                 : "Plan",
         });
         body = outer.createDiv({ cls: "codex-message" });
+      } else if (item.type === "reasoning") {
+        body = outer.createDiv({ cls: "codex-message" });
       } else {
         const d = outer.createEl("details");
         const label = item.type
           .replace(/([A-Z])/g, " $1")
           .replace(/^./, (c: string) => c.toUpperCase());
-        d.createEl("summary", { text: item.command || item.tool || label });
+        d.createEl("summary", {
+          text:
+            item.type === "commandExecution"
+              ? "Ran command"
+              : item.tool || label,
+        });
         body = d.createEl("pre");
       }
       const component = new Component();
@@ -2759,12 +2868,16 @@ class CodexView extends ItemView {
       }
     }
     const text = itemText(item);
+    if (item.type === "commandExecution") {
+      const summary = row.body.parentElement?.querySelector("summary");
+      summary?.setText(item.command ? `Ran ${item.command}` : "Ran command");
+    }
     const version = ++row.version;
     row.component.unload();
     row.component = new Component();
     row.component.load();
     row.body.empty();
-    if (["agentMessage", "plan"].includes(item.type)) {
+    if (["agentMessage", "plan", "reasoning"].includes(item.type)) {
       const target = row.body.createDiv();
       void MarkdownRenderer.render(
         this.app,
@@ -3226,7 +3339,7 @@ class CodexView extends ItemView {
     );
   }
   private requireIdle() {
-    if (this.turnId || this.starting || this.operation)
+    if (this.turnId || this.starting || this.operation || this.pastingImages)
       throw new Error("Stop the current turn before this action.");
   }
   private async review() {

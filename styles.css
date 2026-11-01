@@ -172,6 +172,18 @@ button.codex-response-selection-action[hidden] {
   color: var(--text-muted);
   white-space: pre-wrap;
 }
+.codex-command-group > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.codex-command-items .codex-item {
+  padding: 2px 0;
+}
+.codex-command-items .codex-item summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .codex-item pre {
   background: var(--background-secondary);
   padding: 8px;
@@ -401,7 +413,8 @@ button.codex-response-selection-action[hidden] {
   box-shadow: none;
   background: transparent;
 }
-.codex-composer-actions > .codex-send-row .codex-send-icon {
+.codex-composer-actions > .codex-send-row .codex-send-icon,
+.codex-composer-actions > .codex-send-row .codex-stop-icon {
   width: 28px;
   height: 28px;
   padding: 6px;
@@ -409,12 +422,12 @@ button.codex-response-selection-action[hidden] {
   background: var(--text-normal);
   color: var(--background-primary);
 }
-.codex-send-row .codex-stop-icon {
-  width: 28px;
-  padding: 6px;
-}
-.codex-send-row .codex-stop-icon:disabled {
+.codex-send-row .codex-send-icon[hidden],
+.codex-send-row .codex-stop-icon[hidden] {
   display: none;
+}
+.codex-stop-icon svg rect {
+  fill: currentColor;
 }
 .codex-send-row svg {
   width: 16px;
