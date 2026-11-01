@@ -1,6 +1,6 @@
 {
   "name": "obsidian-codex",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "Native Obsidian desktop chat for Codex and Claude Code CLI",
   "scripts": {
