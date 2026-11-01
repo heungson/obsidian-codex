@@ -7,7 +7,6 @@ import {
 import { spawn } from "node:child_process";
 import { resolveCliLaunch, type ExecutableContext } from "./executable";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, isAbsolute } from "node:path";
 import type {
@@ -269,6 +268,7 @@ export class ClaudeClient extends EventEmitter {
     private cwd: () => string,
     private runtime: () => ClaudeRuntime,
     private archive?: ClaudeArchiveStore,
+    private readImage?: (path: string) => Promise<Uint8Array>,
   ) {
     super();
   }
@@ -660,7 +660,9 @@ export class ClaudeClient extends EventEmitter {
         } else if (input.type === "localImage") {
           if (typeof input.path !== "string")
             throw new Error("Invalid image path");
-          const data = await readFile(input.path);
+          if (!this.readImage)
+            throw new Error("Image attachment access is unavailable.");
+          const data = await this.readImage(input.path);
           if (data.byteLength > 10 * 1024 * 1024)
             throw new Error("Choose an image smaller than 10 MiB.");
           const ext = extname(input.path).toLowerCase();
@@ -680,7 +682,7 @@ export class ClaudeClient extends EventEmitter {
             source: {
               type: "base64",
               media_type: mime[ext],
-              data: data.toString("base64"),
+              data: Buffer.from(data).toString("base64"),
             },
           });
         } else throw new Error(`Unsupported Claude input: ${input.type}`);

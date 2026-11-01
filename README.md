@@ -81,7 +81,9 @@ Selecting full access/bypass requires an explicit confirmation. Controls are loc
 
 The plugin does not automatically attach your whole vault. Both agents can still read files through tools according to their current permissions. This is not an attachment-only isolation boundary. Provider policies govern prompts, attachments, tool-read content, and usage data.
 
-Credentials stay with the CLIs. The plugin does not read login files or save tokens/passwords. Its `data.json` stores provider preferences, CLI paths, working folder, last session IDs, and vault-local Claude archive IDs. Conversations stay in provider-managed storage unless you explicitly export Markdown notes.
+The plugin does not read CLI login files or save tokens/passwords. The launched CLI inherits Obsidian's process environment, including any credentials or other sensitive values present there; its own configuration, hooks, tools, and provider may use them. Its `data.json` stores provider preferences, CLI paths, working folder, last session IDs, and vault-local Claude archive IDs. Conversations stay in provider-managed storage unless you explicitly export Markdown notes.
+
+The community scanner reports filesystem access and child-process execution: the plugin discovers installed executables, starts the CLI, and runs fixed-argument Git commands when you request a Claude review. The file picker enumerates vault file paths; it reads selected content when you attach it. Claude image bytes are read through Obsidian's vault API, limited to selected image files in the current vault. Copy actions write to the system clipboard. The bundled Claude SDK contains dynamic code generation, which the scanner also reports. These capabilities remain present and should not be interpreted as a complete security boundary.
 
 Closing the panel/disabling the plugin closes its owned processes and denies pending approvals. Reopening resumes persisted history. Requests are not automatically replayed after failures/timeouts: inspect history before resending an action with an unknown outcome.
 
@@ -125,7 +127,7 @@ npm ci --omit=optional
 npm rebuild esbuild
 npm run check          # typecheck, production builds, transport/adapter/view tests
 npm run dev            # watch the plugin
-npm run bundle         # dist/codex-agent-chat-0.5.3.zip
+npm run bundle         # dist/codex-agent-chat-0.5.4.zip
 ```
 
 `npm ci --omit=optional` avoids downloading Anthropic's optional native CLI packages. Rebuilding esbuild supplies its own platform build executable. The JavaScript SDK is embedded in `main.js` with scoped Node timers/AbortSignal for Electron; it never replaces renderer globals. No native CLI binary is embedded or silently downloaded at runtime.

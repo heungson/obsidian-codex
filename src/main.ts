@@ -77,6 +77,33 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 function jsonText(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
+export async function readVaultImage(
+  app: App,
+  path: string,
+): Promise<Uint8Array> {
+  const adapter = app.vault.adapter;
+  if (!(adapter instanceof FileSystemAdapter) || !isAbsolute(path))
+    throw new Error("Image attachments require a local vault file.");
+  const rel = relative(adapter.getBasePath(), path);
+  if (
+    !rel ||
+    rel === ".." ||
+    rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(rel)
+  )
+    throw new Error("Image attachment must be inside the current vault.");
+  const file = app.vault.getAbstractFileByPath(normalizePath(rel));
+  if (
+    !(file instanceof TFile) ||
+    !["png", "jpg", "jpeg", "webp", "gif"].includes(
+      file.extension.toLowerCase(),
+    )
+  )
+    throw new Error("Choose an image in the current vault.");
+  if (file.stat.size > 10 * 1024 * 1024)
+    throw new Error("Choose an image smaller than 10 MiB.");
+  return new Uint8Array(await app.vault.readBinary(file));
+}
 function chatItem(value: unknown): ChatItem | null {
   const item = jsonRecord(value);
   if (typeof item.id !== "string" || !item.id || typeof item.type !== "string")
@@ -834,6 +861,7 @@ export default class CodexPlugin extends Plugin {
             await this.save();
           },
         },
+        (path) => readVaultImage(this.app, path),
       );
     return new CodexClient(
       () => findExecutable(this.settings.executable),

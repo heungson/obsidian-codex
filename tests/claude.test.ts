@@ -204,6 +204,47 @@ test("Claude adapter streams text, closes completed query promptly, preserves ex
     "completed",
   );
 });
+test("Claude reads image bytes only through the injected vault reader", async (t) => {
+  const r = runtime();
+  const paths: string[] = [];
+  const c = new ClaudeClient(
+    () => installedClaude,
+    () => process.cwd(),
+    () => r.sdk,
+    undefined,
+    async (path) => {
+      paths.push(path);
+      return Uint8Array.from([1, 2, 3]);
+    },
+  );
+  t.after(() => c.disconnect());
+  await c.connect();
+  const started = await c.request("thread/start");
+  await c.request("turn/start", {
+    threadId: (started.thread as { id: string }).id,
+    input: [{ type: "localImage", path: "image.png" }],
+  });
+  const query = r.queries.at(-1)!;
+  const queued = await query.prompt[Symbol.asyncIterator]().next();
+  assert.deepEqual(paths, ["image.png"]);
+  assert.deepEqual(queued.value.message.content, [
+    {
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "AQID" },
+    },
+  ]);
+});
+test("Claude refuses image paths when no vault reader is configured", async (t) => {
+  const h = await setup();
+  t.after(() => h.client.disconnect());
+  await assert.rejects(
+    h.client.request("turn/start", {
+      threadId: h.id,
+      input: [{ type: "localImage", path: "outside.png" }],
+    }),
+    /Image attachment access is unavailable/,
+  );
+});
 test("read-only hook denies shell, write, agent and unknown MCP even if earlier settings would allow them", async () => {
   const hook = claudeReadOnlyHook();
   for (const tool_name of [

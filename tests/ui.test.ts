@@ -181,6 +181,35 @@ function click(text: string, root: ParentNode = document) {
 function event(client: FakeClient, method: string, params: any) {
   client.emit("notification", method, { threadId: "thread-1", ...params });
 }
+test("Claude images are read through the vault and reject files outside it", async (t) => {
+  const h = await harness();
+  t.after(() => h.view.onClose());
+  const root = resolve("test-vault");
+  h.app.vault.adapter = new host.FileSystemAdapter(root);
+  const image = new host.TFile("images/photo.png");
+  h.files.set(image.path, image);
+  h.app.vault.readBinary = async (file: unknown) => {
+    assert.equal(file, image);
+    return Uint8Array.from([1, 2, 3]).buffer;
+  };
+  assert.deepEqual(
+    await host.readVaultImage(h.app, resolve(root, "images/photo.png")),
+    Uint8Array.from([1, 2, 3]),
+  );
+  await assert.rejects(
+    host.readVaultImage(h.app, resolve(root, "../outside.png")),
+    /inside the current vault/,
+  );
+  await assert.rejects(
+    host.readVaultImage(h.app, resolve(root, "images/missing.png")),
+    /Choose an image/,
+  );
+  image.stat.size = 11 * 1024 * 1024;
+  await assert.rejects(
+    host.readVaultImage(h.app, resolve(root, "images/photo.png")),
+    /10 MiB/,
+  );
+});
 test("consecutive tool calls and reasoning share a collapsed activity group", async (t) => {
   const h = await harness();
   t.after(() => h.view.onClose());
