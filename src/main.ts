@@ -43,6 +43,100 @@ import {
   type PlatformPathMap,
 } from "./platform-settings";
 type Provider = "codex" | "claude";
+interface ModelInfo {
+  model: string;
+  displayName?: string;
+  description?: string;
+  isDefault?: boolean;
+  currentOnly?: boolean;
+  inputModalities?: string[];
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts?: { reasoningEffort: string }[];
+}
+interface ChatItem extends Record<string, unknown> {
+  id: string;
+  type: string;
+  text?: string;
+  phase?: string;
+  command?: string;
+  tool?: string;
+  aggregatedOutput?: string;
+  summary?: string[];
+  changes?: Record<string, unknown>[];
+}
+interface ClientRequest {
+  id: string | number;
+  method: string;
+  params: Record<string, unknown>;
+}
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+function jsonText(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+function chatItem(value: unknown): ChatItem | null {
+  const item = jsonRecord(value);
+  if (typeof item.id !== "string" || !item.id || typeof item.type !== "string")
+    return null;
+  const parsed: ChatItem = { ...item, id: item.id, type: item.type };
+  for (const key of [
+    "text",
+    "phase",
+    "command",
+    "tool",
+    "aggregatedOutput",
+  ] as const) {
+    if (typeof item[key] !== "string") delete parsed[key];
+  }
+  if (Array.isArray(item.summary))
+    parsed.summary = item.summary.filter(
+      (v: unknown): v is string => typeof v === "string",
+    );
+  else delete parsed.summary;
+  if (Array.isArray(item.changes))
+    parsed.changes = item.changes.map(jsonRecord);
+  else delete parsed.changes;
+  return parsed;
+}
+function parseModels(value: unknown): ModelInfo[] {
+  const data = jsonRecord(value).data;
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((value: unknown) => {
+    const model = jsonRecord(value);
+    if (typeof model.model !== "string" || !model.model) return [];
+    const efforts = Array.isArray(model.supportedReasoningEfforts)
+      ? model.supportedReasoningEfforts.flatMap((value: unknown) => {
+          const effort = jsonRecord(value).reasoningEffort;
+          return typeof effort === "string"
+            ? [{ reasoningEffort: effort }]
+            : [];
+        })
+      : [];
+    return [
+      {
+        model: model.model,
+        displayName:
+          typeof model.displayName === "string" ? model.displayName : undefined,
+        description:
+          typeof model.description === "string" ? model.description : undefined,
+        isDefault: model.isDefault === true,
+        inputModalities: Array.isArray(model.inputModalities)
+          ? model.inputModalities.filter(
+              (v: unknown): v is string => typeof v === "string",
+            )
+          : undefined,
+        defaultReasoningEffort:
+          typeof model.defaultReasoningEffort === "string"
+            ? model.defaultReasoningEffort
+            : undefined,
+        supportedReasoningEfforts: efforts,
+      },
+    ];
+  });
+}
 type ProviderPreferences = Pick<
   Settings,
   "model" | "effort" | "access" | "plan" | "lastThreadId"
@@ -88,6 +182,53 @@ const DEFAULTS: Settings = {
   exportFolder: "Codex conversations",
   maxContextChars: 60000,
 };
+function preference(value: unknown): ProviderPreferences {
+  const saved = jsonRecord(value);
+  return {
+    model: jsonText(saved.model),
+    effort: jsonText(saved.effort, DEFAULTS.effort),
+    access:
+      saved.access === "agent" || saved.access === "full-access"
+        ? saved.access
+        : "read-only",
+    plan: saved.plan === true,
+    lastThreadId: jsonText(saved.lastThreadId),
+  };
+}
+function parseSettings(value: unknown): Settings {
+  const saved = jsonRecord(value);
+  const states = jsonRecord(saved.providerStates);
+  const providerStates: Settings["providerStates"] = {};
+  for (const provider of ["codex", "claude"] as const)
+    if (states[provider] !== undefined)
+      providerStates[provider] = preference(states[provider]);
+  const paths = loadPlatformPaths({
+    executable: jsonText(saved.executable),
+    claudeExecutable: jsonText(saved.claudeExecutable),
+    cwd: jsonText(saved.cwd),
+    platformPaths: saved.platformPaths,
+  });
+  return {
+    ...DEFAULTS,
+    ...preference(saved),
+    ...paths,
+    provider: saved.provider === "claude" ? "claude" : "codex",
+    providerStates,
+    claudeArchived: Array.isArray(saved.claudeArchived)
+      ? saved.claudeArchived.filter(
+          (value: unknown): value is string => typeof value === "string",
+        )
+      : [],
+    exportFolder: jsonText(saved.exportFolder, DEFAULTS.exportFolder),
+    maxContextChars:
+      typeof saved.maxContextChars === "number" &&
+      Number.isFinite(saved.maxContextChars) &&
+      saved.maxContextChars >= 1000 &&
+      saved.maxContextChars <= 500000
+        ? saved.maxContextChars
+        : DEFAULTS.maxContextChars,
+  };
+}
 
 function button(
   parent: HTMLElement,
@@ -200,13 +341,13 @@ class RequestModal extends Modal {
   private submitters: Array<() => void> = [];
   constructor(
     app: App,
-    public message: Json,
-    private reply: (result: Json) => void,
+    public message: ClientRequest,
+    private reply: (result: Record<string, unknown>) => void,
     private finished: () => void,
   ) {
     super(app);
   }
-  private respond(result: Json) {
+  private respond(result: Record<string, unknown>) {
     if (this.answered) return;
     this.answered = true;
     this.reply(result);
@@ -216,7 +357,7 @@ class RequestModal extends Modal {
     this.answered = true;
     this.close();
   }
-  private deny(): Json {
+  private deny(): Record<string, unknown> {
     const m = this.message.method;
     if (m === "item/tool/requestUserInput") return { answers: {} };
     if (m === "item/permissions/requestApproval")
@@ -226,39 +367,46 @@ class RequestModal extends Modal {
     return { decision: "decline" };
   }
   onOpen() {
-    const { method, params: p } = this.message;
+    const message = this.message;
+    const method = message.method;
+    const p = jsonRecord(message.params);
     this.titleEl.setText(
       method === "item/tool/requestUserInput"
-        ? `${p.providerLabel ?? "Codex"} needs your input`
-        : `${p.providerLabel ?? "Codex"} requests approval`,
+        ? `${jsonText(p.providerLabel, "Codex")} needs your input`
+        : `${jsonText(p.providerLabel, "Codex")} requests approval`,
     );
     this.contentEl.createEl("p", {
       text:
-        p.reason ??
-        p.message ??
+        jsonText(p.reason) ||
+        jsonText(p.message) ||
         "Review the requested action before allowing it.",
     });
     if (method === "item/tool/requestUserInput") {
       const answers: Json = {};
-      for (const q of p.questions ?? []) {
+      for (const q of Array.isArray(p.questions)
+        ? p.questions.map(jsonRecord)
+        : []) {
+        const options = Array.isArray(q.options)
+          ? q.options.map(jsonRecord)
+          : [];
         const group = this.contentEl.createDiv({ cls: "codex-question" });
-        group.createEl("h3", { text: q.header });
-        group.createEl("p", { text: q.question });
+        group.createEl("h3", { text: jsonText(q.header) });
+        group.createEl("p", { text: jsonText(q.question) });
         let choice: HTMLSelectElement | undefined;
-        if (q.options?.length) {
+        if (options.length) {
           choice = group.createEl("select", { cls: "codex-wide" });
           if (q.multiSelect) {
             choice.multiple = true;
-            choice.size = Math.min(5, q.options.length);
+            choice.size = Math.min(5, options.length);
             group.createEl("small", {
               text: "Hold Cmd/Ctrl to select multiple answers.",
             });
           } else
             choice.createEl("option", { text: "Choose an answer", value: "" });
-          for (const o of q.options)
+          for (const o of options)
             choice.createEl("option", {
-              text: `${o.label} — ${o.description}`,
-              value: o.label,
+              text: `${jsonText(o.label)} — ${jsonText(o.description)}`,
+              value: jsonText(o.label),
             });
         }
         const input =
@@ -281,8 +429,10 @@ class RequestModal extends Modal {
                 ? [choice.value]
                 : [];
           if (!values.length)
-            throw new Error(`Answer “${q.header}” before submitting.`);
-          answers[q.id] = { answers: values };
+            throw new Error(
+              `Answer “${jsonText(q.header)}” before submitting.`,
+            );
+          answers[jsonText(q.id)] = { answers: values };
         });
       }
       button(this.contentEl, "Submit answers", () => {
@@ -295,13 +445,13 @@ class RequestModal extends Modal {
       });
     } else if (method === "mcpServer/elicitation/request") {
       this.contentEl.createEl("p", {
-        text: `MCP server: ${p.serverName ?? "unknown"}`,
+        text: `MCP server: ${jsonText(p.serverName, "unknown")}`,
       });
       if (p.mode === "url") {
-        this.contentEl.createEl("p", { text: p.url });
+        const url = jsonText(p.url);
+        this.contentEl.createEl("p", { text: url });
         button(this.contentEl, "Open verification link", () => {
-          if (/^https?:\/\//i.test(p.url))
-            window.open(p.url, "_blank", "noopener");
+          if (/^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener");
         });
         button(this.contentEl, "I completed verification", () =>
           this.respond({ action: "accept", content: null, _meta: null }),
@@ -309,12 +459,14 @@ class RequestModal extends Modal {
       } else if (p.mode === "form") {
         const values: Json = {};
         const fields: Array<() => void> = [];
-        for (const [key, schema] of Object.entries(
-          p.requestedSchema?.properties ?? {},
-        ) as [string, Json][]) {
+        const requestedSchema = jsonRecord(p.requestedSchema);
+        for (const [key, schemaValue] of Object.entries(
+          jsonRecord(requestedSchema.properties),
+        )) {
+          const schema = jsonRecord(schemaValue);
           const row = this.contentEl.createDiv({ cls: "codex-question" });
-          row.createEl("label", { text: schema.title ?? key });
-          if (schema.description)
+          row.createEl("label", { text: jsonText(schema.title, key) });
+          if (typeof schema.description === "string")
             row.createEl("p", { text: schema.description });
           let input: HTMLInputElement | HTMLSelectElement;
           const choices = enumOptions(schema);
@@ -339,7 +491,8 @@ class RequestModal extends Modal {
               });
               if (
                 schema.type === "array" &&
-                schema.default?.includes(option.value)
+                Array.isArray(schema.default) &&
+                schema.default.includes(option.value)
               )
                 el.selected = true;
             }
@@ -361,7 +514,7 @@ class RequestModal extends Modal {
             });
             input = field;
             if (schema.type === "boolean")
-              field.checked = schema.default ?? false;
+              field.checked = schema.default === true;
             else if (schema.default !== undefined)
               field.value = String(schema.default);
             if (schema.type === "number") field.step = "any";
@@ -381,7 +534,8 @@ class RequestModal extends Modal {
               key,
               schema,
               raw,
-              p.requestedSchema.required?.includes(key) ?? false,
+              Array.isArray(requestedSchema.required) &&
+                requestedSchema.required.includes(key),
             );
             if (value !== undefined) values[key] = value;
             else delete values[key];
@@ -401,15 +555,16 @@ class RequestModal extends Modal {
         });
       detail(this.contentEl, "Request details", JSON.stringify(p, null, 2));
     } else {
-      if (p.command)
+      if (typeof p.command === "string")
         this.contentEl.createEl("pre", {
           text: p.command,
           cls: "codex-inspect",
         });
-      if (p.cwd)
+      if (typeof p.cwd === "string")
         this.contentEl.createEl("p", { text: `Working directory: ${p.cwd}` });
-      if (p.input?.file_path)
-        this.contentEl.createEl("p", { text: `File: ${p.input.file_path}` });
+      const input = jsonRecord(p.input);
+      if (typeof input.file_path === "string")
+        this.contentEl.createEl("p", { text: `File: ${input.file_path}` });
       detail(this.contentEl, "Full request", JSON.stringify(p, null, 2));
       button(
         this.contentEl,
@@ -418,10 +573,10 @@ class RequestModal extends Modal {
           : "Allow once",
         () => {
           if (method === "item/permissions/requestApproval") {
-            const permissions: Json = {};
+            const permissions: Record<string, unknown> = {};
+            const requested = jsonRecord(p.permissions);
             for (const key of ["network", "fileSystem"])
-              if (p.permissions?.[key] != null)
-                permissions[key] = p.permissions[key];
+              if (requested[key] != null) permissions[key] = requested[key];
             this.respond({ permissions, scope: "turn" });
           } else this.respond({ decision: "accept" });
         },
@@ -495,10 +650,18 @@ class HistoryModal extends Modal {
       if (this.closed || serial !== this.serial) return;
       marker.remove();
       this.list.querySelector(".codex-more")?.remove();
-      this.cursor = result.nextCursor;
-      for (const t of result.data ?? []) {
+      const page = jsonRecord(result);
+      this.cursor =
+        typeof page.nextCursor === "string" ? page.nextCursor : null;
+      const threads = Array.isArray(page.data) ? page.data.map(jsonRecord) : [];
+      for (const t of threads) {
+        if (typeof t.id !== "string") continue;
+        const id = t.id;
         const row = this.list.createDiv({ cls: "codex-history-row" });
-        const name = t.name || t.preview || "Untitled conversation";
+        const name =
+          (typeof t.name === "string" && t.name) ||
+          (typeof t.preview === "string" && t.preview) ||
+          "Untitled conversation";
         button(
           row,
           name.slice(0, 130),
@@ -507,18 +670,21 @@ class HistoryModal extends Modal {
             void this.view.guard(async () => {
               if (this.archived)
                 await this.view.plugin.client.request("thread/unarchive", {
-                  threadId: t.id,
+                  threadId: id,
                 });
-              await this.view.resume(t.id);
+              await this.view.resume(id);
             });
           },
           name,
         );
         row.createEl("small", {
-          text: new Date(t.updatedAt * 1000).toLocaleString(),
+          text:
+            typeof t.updatedAt === "number"
+              ? new Date(t.updatedAt * 1000).toLocaleString()
+              : "",
         });
       }
-      if (!result.data?.length && !more)
+      if (!threads.length && !more)
         this.list.createEl("p", {
           text: "No conversations for this working folder.",
         });
@@ -539,14 +705,16 @@ export default class CodexPlugin extends Plugin {
   declare settings: Settings;
   client!: CodexClient | ClaudeClient;
   async onload() {
-    let saved = await this.loadData();
+    let saved: unknown = await this.loadData();
     if (saved == null && this.manifest?.id === "codex-agent-chat") {
       const legacy = normalizePath(
         `${this.app.vault.configDir}/plugins/obsidian-codex/data.json`,
       );
       if (await this.app.vault.adapter.exists(legacy)) {
         try {
-          saved = JSON.parse(await this.app.vault.adapter.read(legacy));
+          saved = JSON.parse(
+            await this.app.vault.adapter.read(legacy),
+          ) as unknown;
           new Notice(
             "Codex settings were copied from the previous installation. Disable the old Codex plugin to avoid duplicate panels.",
           );
@@ -558,8 +726,7 @@ export default class CodexPlugin extends Plugin {
         }
       }
     }
-    saved ??= {};
-    this.settings = { ...DEFAULTS, ...saved, ...loadPlatformPaths(saved) };
+    this.settings = parseSettings(saved);
     await this.save();
     this.client = this.createClient();
     this.registerView(VIEW, (leaf) => new CodexView(leaf, this));
@@ -623,17 +790,12 @@ export default class CodexPlugin extends Plugin {
       callback: () => void this.open().then((v) => v?.attachActive()),
     });
   }
-  noteSelection(
-    document: Document = activeDocument,
-  ): NoteSelection | null {
+  noteSelection(document: Document = activeDocument): NoteSelection | null {
     const views = this.app.workspace
       .getLeavesOfType("markdown")
       .map((leaf) => leaf.view)
-      .filter((view) => view instanceof MarkdownView) as MarkdownView[];
-    const snapshot = captureNoteSelection(
-      views as unknown as SelectionView[],
-      document,
-    );
+      .filter((view) => view instanceof MarkdownView);
+    const snapshot = captureNoteSelection(views, document);
     if (snapshot) return snapshot;
     const dom = document.getSelection();
     if (dom && !dom.isCollapsed) return null;
@@ -664,7 +826,7 @@ export default class CodexPlugin extends Plugin {
         () => findExecutable(this.settings.claudeExecutable, "claude"),
         () => this.cwd(),
         () => {
-          return embeddedClaudeRuntime() as ClaudeRuntime;
+          return embeddedClaudeRuntime();
         },
         {
           get: () => this.settings.claudeArchived,
@@ -743,107 +905,140 @@ class CodexSettingsTab extends PluginSettingTab {
   ) {
     super(app, plugin);
   }
-  display() {
-    const { containerEl: c } = this;
-    c.empty();
-    c.createEl("p", {
-      text: "Uses the selected installed CLI and its existing login. No credentials are stored by this plugin. Restart the connection after changing the executable or working folder.",
-    });
-    new Setting(c)
-      .setName("Provider")
-      .setDesc(
-        "Each provider keeps its own model, permissions, and last conversation.",
-      )
-      .addDropdown((d) =>
-        d
-          .addOption("codex", "Codex CLI")
-          .addOption("claude", "Claude Code CLI")
-          .setValue(this.plugin.settings.provider)
-          .onChange(async (value) => {
-            await this.plugin
-              .open()
-              .then((view) => view?.changeProvider(value as Provider));
-            this.display();
-          }),
-      );
-    new Setting(c)
-      .setName("Claude Code executable")
-      .setDesc(
-        `Path for ${platformName()}. Blank discovers the installed Claude CLI on this system. Paths for other operating systems are kept separately. Existing Claude login is reused.`,
-      )
-      .addText((t) =>
-        t
-          .setPlaceholder("Auto-detect Claude CLI")
-          .setValue(this.plugin.settings.claudeExecutable)
-          .onChange(async (value) => {
-            this.plugin.settings.claudeExecutable = value.trim();
-            await this.plugin.save();
-          }),
-      );
-    new Setting(c)
-      .setName("Codex executable")
-      .setDesc(
-        `Path for ${platformName()}. Blank discovers the installed Codex CLI on this system. Paths for other operating systems are kept separately.`,
-      )
-      .addText((t) =>
-        t
-          .setPlaceholder("Auto-detect Codex CLI")
-          .setValue(this.plugin.settings.executable)
-          .onChange(async (v) => {
-            this.plugin.settings.executable = v.trim();
-            await this.plugin.save();
-          }),
-      );
-    new Setting(c)
-      .setName("Working folder")
-      .setDesc(
-        `Folder for ${platformName()}. Blank uses this vault's current location. This controls tools and conversation history. Paths for other operating systems are kept separately.`,
-      )
-      .addText((t) =>
-        t
-          .setPlaceholder("Vault folder")
-          .setValue(this.plugin.settings.cwd)
-          .onChange(async (v) => {
-            this.plugin.settings.cwd = v.trim();
-            await this.plugin.save();
-          }),
-      );
-    new Setting(c)
-      .setName("Export folder")
-      .setDesc("Vault-relative folder for conversation notes.")
-      .addText((t) =>
-        t.setValue(this.plugin.settings.exportFolder).onChange(async (v) => {
-          this.plugin.settings.exportFolder = v;
-          await this.plugin.save();
-        }),
-      );
-    new Setting(c)
-      .setName("Attachment size limit")
-      .setDesc(
-        "Maximum total characters attached to one message. Files are attached explicitly; the vault is not uploaded automatically.",
-      )
-      .addText((t) =>
-        t
-          .setValue(String(this.plugin.settings.maxContextChars))
-          .onChange(async (v) => {
-            const n = Number(v);
-            if (Number.isFinite(n) && n >= 1000 && n <= 500000) {
-              this.plugin.settings.maxContextChars = Math.round(n);
+  getSettingDefinitions(): {
+    name: string;
+    desc?: string;
+    render: (row: Setting) => void;
+  }[] {
+    const settings = this.plugin.settings;
+    return [
+      {
+        name: "Provider",
+        desc: "Each provider keeps its own model, permissions, and last conversation. Uses the installed CLI and its existing login; no credentials are stored by this plugin.",
+        render: (row) => {
+          row.addDropdown((d) =>
+            d
+              .addOption("codex", "Codex CLI")
+              .addOption("claude", "Claude Code CLI")
+              .setValue(settings.provider)
+              .onChange(async (value) => {
+                if (value !== "codex" && value !== "claude") return;
+                try {
+                  await this.plugin
+                    .open()
+                    .then((view) => view?.changeProvider(value));
+                } finally {
+                  d.setValue(this.plugin.settings.provider);
+                }
+              }),
+          );
+        },
+      },
+      {
+        name: "Claude Code executable",
+        desc: `Path for ${platformName()}. Blank discovers the installed Claude CLI on this system. Paths for other operating systems are kept separately. Existing Claude login is reused.`,
+        render: (row) => {
+          row.addText((t) =>
+            t
+              .setPlaceholder("Auto-detect Claude CLI")
+              .setValue(settings.claudeExecutable)
+              .onChange(async (value) => {
+                settings.claudeExecutable = value.trim();
+                await this.plugin.save();
+              }),
+          );
+        },
+      },
+      {
+        name: "Codex executable",
+        desc: `Path for ${platformName()}. Blank discovers the installed Codex CLI on this system. Paths for other operating systems are kept separately.`,
+        render: (row) => {
+          row.addText((t) =>
+            t
+              .setPlaceholder("Auto-detect Codex CLI")
+              .setValue(settings.executable)
+              .onChange(async (value) => {
+                settings.executable = value.trim();
+                await this.plugin.save();
+              }),
+          );
+        },
+      },
+      {
+        name: "Working folder",
+        desc: `Folder for ${platformName()}. Blank uses this vault's current location. This controls tools and conversation history. Paths for other operating systems are kept separately.`,
+        render: (row) => {
+          row.addText((t) =>
+            t
+              .setPlaceholder("Vault folder")
+              .setValue(settings.cwd)
+              .onChange(async (value) => {
+                settings.cwd = value.trim();
+                await this.plugin.save();
+              }),
+          );
+        },
+      },
+      {
+        name: "Export folder",
+        desc: "Vault-relative folder for conversation notes.",
+        render: (row) => {
+          row.addText((t) =>
+            t.setValue(settings.exportFolder).onChange(async (value) => {
+              settings.exportFolder = value;
               await this.plugin.save();
-            }
-          }),
-      );
-    new Setting(c).setName("Connection").addButton((b) =>
-      b.setButtonText("Reconnect").onClick(() => {
-        this.plugin.client.disconnect();
-        void this.plugin.open().then((v) => v?.connect());
-      }),
-    );
-    c.createEl("p", {
-      text: "Desktop only. Codex agent mode uses its workspace sandbox. Claude manual mode uses Claude tool permissions, not an OS sandbox; its read-only mode restricts tools and blocks writes/shell/unknown tools. Loaded CLI hooks and settings remain part of your trusted CLI configuration. Cloud tasks, VS Code editor actions, and rich MCP app widgets are unavailable. CLI configuration, skills, and MCP servers are shared with your other Codex clients.",
-    });
+            }),
+          );
+        },
+      },
+      {
+        name: "Attachment size limit",
+        desc: "Maximum total characters attached to one message. Files are attached explicitly; the vault is not uploaded automatically.",
+        render: (row) => {
+          row.addText((t) =>
+            t
+              .setValue(String(settings.maxContextChars))
+              .onChange(async (value) => {
+                const n = Number(value);
+                if (Number.isFinite(n) && n >= 1000 && n <= 500000) {
+                  settings.maxContextChars = Math.round(n);
+                  await this.plugin.save();
+                }
+              }),
+          );
+        },
+      },
+      {
+        name: "Connection",
+        desc: "Reconnect after changing the executable or working folder.",
+        render: (row) => {
+          row.addButton((b) =>
+            b.setButtonText("Reconnect").onClick(() => {
+              this.plugin.client.disconnect();
+              void this.plugin.open().then((view) => view?.connect());
+            }),
+          );
+        },
+      },
+      {
+        name: "Permissions and capabilities",
+        desc: "Desktop only. Codex agent mode uses its workspace sandbox. Claude manual mode uses Claude tool permissions, not an OS sandbox; its read-only mode restricts tools and blocks writes, shell commands, and unknown tools. Loaded CLI hooks and settings remain part of your trusted CLI configuration. Cloud tasks, VS Code editor actions, and rich MCP app widgets are unavailable. CLI configuration, skills, and MCP servers are shared with your other Codex clients.",
+        render: () => {},
+      },
+    ];
+  }
+  // Compatibility fallback for Obsidian releases before 1.13.
+  display() {
+    const c = this.containerEl;
+    c.empty();
+    for (const definition of this.getSettingDefinitions()) {
+      const row = new Setting(c).setName(definition.name);
+      if (definition.desc) row.setDesc(definition.desc);
+      definition.render(row);
+    }
   }
 }
+
 class CodexView extends ItemView {
   private status!: HTMLElement;
   private title!: HTMLElement;
@@ -866,12 +1061,12 @@ class CodexView extends ItemView {
   }
   private starting = false;
   private operation = false;
-  private items = new Map<string, Json>();
+  private items = new Map<string, ChatItem>();
   private rows = new Map<
     string,
     { body: HTMLElement; version: number; component: Component }
   >();
-  private models: Json[] = [];
+  private models: ModelInfo[] = [];
   private attachments: Attachment[] = [];
   private selectionButton!: HTMLButtonElement;
   private selectionWatch?: () => void;
@@ -885,7 +1080,7 @@ class CodexView extends ItemView {
   private skillSuppressed = false;
   private selectionIntent?: ReturnType<typeof selectionGesture>;
   private menuSelectionCleanup?: () => void;
-  private pending: Json[] = [];
+  private pending: ClientRequest[] = [];
   private requestModal?: RequestModal;
   private closed = false;
   private connectedOnce = false;
@@ -893,8 +1088,9 @@ class CodexView extends ItemView {
   private dirty = new Set<string>();
   private historyCursor: string | null = null;
   private paginated = false;
-  private notification = (method: string, p: Json) => this.onEvent(method, p);
-  private serverRequest = (m: Json) => this.onRequest(m);
+  private notification = (method: string, p: unknown) =>
+    this.onEvent(method, p);
+  private serverRequest = (m: unknown) => this.onRequest(m);
   private disconnect = (e: Error) => {
     this.status?.setText(e.message);
     this.starting = false;
@@ -1157,7 +1353,7 @@ class CodexView extends ItemView {
       text: "Ask about a note, explore an idea, or work on files. Attach a note or selection below to include its current text. Read-only is the default.",
     });
   }
-  async guard(work: () => Promise<any>) {
+  async guard(work: () => Promise<unknown>) {
     try {
       await work();
     } catch (e) {
@@ -1176,7 +1372,7 @@ class CodexView extends ItemView {
         this.plugin.client.request("account/read", { refreshToken: false }),
       ]);
       if (results[0].status === "fulfilled") {
-        this.models = results[0].value.data ?? [];
+        this.models = parseModels(results[0].value);
         if (!this.plugin.settings.model)
           this.plugin.settings.model =
             (this.models.find((m) => m.isDefault) ?? this.models[0])?.model ??
@@ -1184,7 +1380,9 @@ class CodexView extends ItemView {
         this.buildOptions();
       }
       const account =
-        results[1].status === "fulfilled" ? results[1].value.account : null;
+        results[1].status === "fulfilled"
+          ? jsonRecord(results[1].value).account
+          : null;
       this.status.setText(
         account
           ? `Connected · ${basename(this.plugin.cwd())}`
@@ -1401,7 +1599,7 @@ class CodexView extends ItemView {
         const model = this.models.find((m) => m.model === s.model);
         const options = model?.supportedReasoningEfforts ?? [];
         const value = options.find(
-          (o: Json) => o.reasoningEffort === model?.defaultReasoningEffort,
+          (o) => o.reasoningEffort === model?.defaultReasoningEffort,
         )?.reasoningEffort;
         if (!current() || !value) return;
         s.effort = value;
@@ -1473,7 +1671,7 @@ class CodexView extends ItemView {
     });
     const modelButtons: Array<{
       button: HTMLButtonElement;
-      model: Json;
+      model: ModelInfo;
       mark: HTMLElement;
     }> = [];
     const refreshRows = () => {
@@ -1502,14 +1700,12 @@ class CodexView extends ItemView {
         return;
       }
       reset.disabled = !options.some(
-        (option: Json) =>
+        (option) =>
           option.reasoningEffort === activeModel?.defaultReasoningEffort,
       );
       const activeIndex = Math.max(
         0,
-        options.findIndex(
-          (option: Json) => option.reasoningEffort === s.effort,
-        ),
+        options.findIndex((option) => option.reasoningEffort === s.effort),
       );
       efforts.style.setProperty(
         "--codex-effort-progress",
@@ -1552,14 +1748,12 @@ class CodexView extends ItemView {
         if (!model.currentOnly) {
           s.model = model.model;
           const options = model.supportedReasoningEfforts ?? [];
-          if (
-            !options.some((option: Json) => option.reasoningEffort === s.effort)
-          )
+          if (!options.some((option) => option.reasoningEffort === s.effort))
             s.effort = options.some(
-              (option: Json) =>
+              (option) =>
                 option.reasoningEffort === model.defaultReasoningEffort,
             )
-              ? model.defaultReasoningEffort
+              ? (model.defaultReasoningEffort ?? "")
               : (options[0]?.reasoningEffort ?? "");
         }
         refreshRows();
@@ -1743,27 +1937,39 @@ class CodexView extends ItemView {
         const result = await client.request("skills/list", {
           cwds: [this.plugin.cwd()],
         });
-        const entries: Json[] =
+        const response = jsonRecord(result);
+        const groups: unknown[] = Array.isArray(response.data)
+          ? response.data
+          : [];
+        const entries: unknown[] =
           provider === "claude"
-            ? (result.commands ?? [])
-            : (result.data ?? []).flatMap((entry: Json) => entry.skills ?? []);
+            ? Array.isArray(response.commands)
+              ? response.commands
+              : []
+            : groups.flatMap((group) => {
+                const skills = jsonRecord(group).skills;
+                return Array.isArray(skills) ? (skills as unknown[]) : [];
+              });
         const seen = new Set<string>();
         return entries
+          .map(jsonRecord)
           .filter(
-            (entry: Json) =>
+            (entry) =>
               typeof entry.name === "string" &&
               entry.enabled !== false &&
               !seen.has(entry.name) &&
               !!seen.add(entry.name),
           )
-          .map((entry: Json) => ({
-            name: entry.name,
-            description:
-              entry.interface?.shortDescription ??
+          .map((entry) => {
+            const description =
+              jsonRecord(entry.interface).shortDescription ??
               entry.shortDescription ??
-              entry.description ??
-              "",
-          }));
+              entry.description;
+            return {
+              name: String(entry.name),
+              description: typeof description === "string" ? description : "",
+            };
+          });
       })();
       const skills = await this.skillLookup;
       if (
@@ -1947,7 +2153,7 @@ class CodexView extends ItemView {
     if (busy) this.picker?.close(false);
     this.options
       ?.querySelectorAll("button")
-      .forEach((e) => ((e as HTMLButtonElement).disabled = busy));
+      .forEach((e) => (e.disabled = busy));
   }
   private clearRows() {
     for (const row of this.rows.values()) row.component.unload();
@@ -1970,13 +2176,16 @@ class CodexView extends ItemView {
   }
   private async ensureThread() {
     if (this.threadId) return;
-    const r = await this.plugin.client.request("thread/start", {
+    const response: unknown = await this.plugin.client.request("thread/start", {
       cwd: this.plugin.cwd(),
       model: this.plugin.settings.model || undefined,
       ...threadPolicy(this.plugin.settings.access),
     });
-    this.threadId = r.thread.id;
-    this.title.setText(r.thread.name || "New conversation");
+    const thread = jsonRecord(jsonRecord(response).thread);
+    if (typeof thread.id !== "string" || !thread.id)
+      throw new Error("Provider returned an invalid conversation ID.");
+    this.threadId = thread.id;
+    this.title.setText(jsonText(thread.name) || "New conversation");
     this.plugin.settings.lastThreadId = this.threadId;
     await this.plugin.save();
   }
@@ -1986,24 +2195,32 @@ class CodexView extends ItemView {
     this.operation = true;
     this.updateBusy();
     try {
-      const r = await this.plugin.client.request("thread/resume", {
-        threadId: id,
-        cwd: this.plugin.cwd(),
-        ...threadPolicy(this.plugin.settings.access),
-      });
+      const response: unknown = await this.plugin.client.request(
+        "thread/resume",
+        {
+          threadId: id,
+          cwd: this.plugin.cwd(),
+          ...threadPolicy(this.plugin.settings.access),
+        },
+      );
       if (this.closed) return;
+      const thread = jsonRecord(jsonRecord(response).thread);
       this.threadId = id;
       this.plugin.settings.lastThreadId = id;
       await this.plugin.save();
       this.title.setText(
-        r.thread.name || r.thread.preview?.slice(0, 80) || "Conversation",
+        jsonText(thread.name) ||
+          jsonText(thread.preview).slice(0, 80) ||
+          "Conversation",
       );
       this.clearRows();
       this.transcript.empty();
-      let turns = r.thread.turns ?? [];
-      this.paginated = r.thread.historyMode === "paginated";
+      let turns = Array.isArray(thread.turns)
+        ? thread.turns.map(jsonRecord)
+        : [];
+      this.paginated = thread.historyMode === "paginated";
       if (this.paginated) {
-        const page: Json = await this.plugin.client.request(
+        const response: unknown = await this.plugin.client.request(
           "thread/turns/list",
           {
             threadId: id,
@@ -2012,8 +2229,12 @@ class CodexView extends ItemView {
             itemsView: "full",
           },
         );
-        turns = [...(page.data ?? [])].reverse();
-        this.historyCursor = page.nextCursor;
+        const page = jsonRecord(response);
+        turns = Array.isArray(page.data)
+          ? page.data.map(jsonRecord).reverse()
+          : [];
+        this.historyCursor =
+          typeof page.nextCursor === "string" ? page.nextCursor : null;
       } else this.historyCursor = null;
       if (this.historyCursor)
         button(
@@ -2025,7 +2246,11 @@ class CodexView extends ItemView {
         const previousGroups = new Set(
           this.transcript.querySelectorAll(".codex-activity"),
         );
-        const items: Json[] = t.items ?? [];
+        const items = Array.isArray(t.items)
+          ? t.items
+              .map(chatItem)
+              .filter((item): item is ChatItem => item !== null)
+          : [];
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
           const later = items.slice(i + 1);
@@ -2045,9 +2270,13 @@ class CodexView extends ItemView {
           if (!previousGroups.has(group) && typeof t.durationMs === "number")
             this.setWorkedDuration(group, t.durationMs);
         }
-        if (t.status === "inProgress") this.turns.accept(t.id);
+        if (t.status === "inProgress") this.turns.accept(jsonText(t.id));
       }
-      if (["idle", "notLoaded", "systemError"].includes(r.thread.status?.type))
+      if (
+        ["idle", "notLoaded", "systemError"].includes(
+          jsonText(jsonRecord(thread.status).type),
+        )
+      )
         this.turns.idle();
       if (!this.items.size) this.emptyState();
       this.status.setText(`Connected · ${basename(this.plugin.cwd())}`);
@@ -2058,18 +2287,27 @@ class CodexView extends ItemView {
     }
   }
   private async loadEarlier() {
-    const r = await this.plugin.client.request("thread/turns/list", {
-      threadId: this.threadId,
-      cursor: this.historyCursor,
-      limit: 30,
-      sortDirection: "desc",
-      itemsView: "full",
-    });
-    const older = (r.data ?? []).reverse().flatMap((t: Json) => t.items ?? []);
+    const response: unknown = await this.plugin.client.request(
+      "thread/turns/list",
+      {
+        threadId: this.threadId,
+        cursor: this.historyCursor,
+        limit: 30,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    );
+    const page = jsonRecord(response);
+    const older = (
+      Array.isArray(page.data) ? page.data.map(jsonRecord).reverse() : []
+    ).flatMap((turn) =>
+      Array.isArray(turn.items) ? (turn.items as unknown[]) : [],
+    );
     const current = [...this.items.values()];
     this.clearRows();
     this.transcript.empty();
-    this.historyCursor = r.nextCursor;
+    this.historyCursor =
+      typeof page.nextCursor === "string" ? page.nextCursor : null;
     if (this.historyCursor)
       button(
         this.transcript,
@@ -2299,7 +2537,7 @@ class CodexView extends ItemView {
       try {
         await this.ensureThread();
         const input = buildInput(prompt, this.attachments);
-        let result;
+        let result: unknown;
         if (steer)
           result = await this.plugin.client.request("turn/steer", {
             threadId: this.threadId,
@@ -2327,7 +2565,11 @@ class CodexView extends ItemView {
           if (!s.model) delete params.collaborationMode;
           result = await this.plugin.client.request("turn/start", params);
         }
-        const id = result.turn?.id ?? result.turnId;
+        const response = jsonRecord(result);
+        const id = jsonText(
+          jsonRecord(response.turn).id,
+          jsonText(response.turnId),
+        );
         this.turns.accept(id);
         if (this.title.textContent === "New conversation")
           this.title.setText(prompt.split("\n")[0].slice(0, 80));
@@ -2346,8 +2588,9 @@ class CodexView extends ItemView {
       }
     });
   }
-  private putItem(item: Json, inferredCommentary = false) {
-    if (!item.id) return;
+  private putItem(value: unknown, inferredCommentary = false) {
+    const item = chatItem(value);
+    if (!item) return;
     this.transcript.querySelector(".codex-empty")?.remove();
     const existing = this.items.get(item.id);
     this.items.set(item.id, { ...existing, ...item });
@@ -2477,13 +2720,16 @@ class CodexView extends ItemView {
       const links = outer.createDiv({
         cls: "codex-changed-files codex-actions",
       });
-      for (const change of item.changes ?? [])
+      for (const change of item.changes ?? []) {
+        if (typeof change.path !== "string") continue;
+        const path = change.path;
         button(
           links,
-          change.path,
-          () => this.openChangedFile(change.path),
+          path,
+          () => this.openChangedFile(path),
           "Open changed vault file",
         );
+      }
     }
     const text = itemText(item);
     const version = ++row.version;
@@ -2510,30 +2756,37 @@ class CodexView extends ItemView {
     } else row.body.setText(text);
     if (bottom) this.transcript.scrollTop = this.transcript.scrollHeight;
   }
-  private onEvent(method: string, p: Json) {
+  private onEvent(method: string, value: unknown) {
+    const p = jsonRecord(value);
+    const turn = jsonRecord(p.turn);
+    const itemId = jsonText(p.itemId);
+    const delta = jsonText(p.delta);
     if (p.threadId && p.threadId !== this.threadId) return;
     if (!this.threadId) return;
     if (
       method === "thread/status/changed" &&
-      ["idle", "notLoaded", "systemError"].includes(p.status?.type)
+      ["idle", "notLoaded", "systemError"].includes(
+        jsonText(jsonRecord(p.status).type),
+      )
     ) {
       this.turns.idle();
       this.updateBusy();
     } else if (method === "turn/started") {
-      this.turns.accept(p.turn.id);
+      this.turns.accept(jsonText(turn.id));
       this.updateBusy();
     } else if (method === "turn/completed") {
-      if (typeof p.turn.durationMs === "number") {
+      if (typeof turn.durationMs === "number") {
         for (const group of this.transcript.querySelectorAll<HTMLDetailsElement>(
           ".codex-activity",
         )) {
-          if (group.dataset.turnId === p.turn.id)
-            this.setWorkedDuration(group, p.turn.durationMs);
+          if (group.dataset.turnId === turn.id)
+            this.setWorkedDuration(group, turn.durationMs);
         }
       }
-      this.turns.finish(p.turn.id);
+      this.turns.finish(jsonText(turn.id));
       this.status.setText(
-        p.turn.error?.message ?? `Turn ${p.turn.status ?? "completed"}`,
+        jsonText(jsonRecord(turn.error).message) ||
+          `Turn ${jsonText(turn.status, "completed")}`,
       );
       this.updateBusy();
     } else if (method === "item/started" || method === "item/completed")
@@ -2542,71 +2795,82 @@ class CodexView extends ItemView {
       method === "item/agentMessage/delta" ||
       method === "item/plan/delta"
     ) {
-      const item = this.items.get(p.itemId) ?? {
-        id: p.itemId,
+      const item = this.items.get(itemId) ?? {
+        id: itemId,
         type: method.includes("agentMessage") ? "agentMessage" : "plan",
         text: "",
       };
-      this.putItem({ ...item, text: (item.text ?? "") + p.delta });
+      this.putItem({ ...item, text: (item.text ?? "") + delta });
     } else if (method === "item/commandExecution/outputDelta") {
-      const item = this.items.get(p.itemId);
+      const item = this.items.get(itemId);
       if (item)
         this.putItem({
           ...item,
-          aggregatedOutput: (item.aggregatedOutput ?? "") + p.delta,
+          aggregatedOutput: (item.aggregatedOutput ?? "") + delta,
         });
     } else if (method === "item/reasoning/summaryTextDelta") {
-      const item = this.items.get(p.itemId) ?? {
-        id: p.itemId,
+      const item = this.items.get(itemId) ?? {
+        id: itemId,
         type: "reasoning",
         summary: [],
       };
       const summary = [...(item.summary ?? [])];
-      summary[p.summaryIndex] = (summary[p.summaryIndex] ?? "") + p.delta;
+      const index =
+        typeof p.summaryIndex === "number" &&
+        Number.isInteger(p.summaryIndex) &&
+        p.summaryIndex >= 0 &&
+        p.summaryIndex < 10000
+          ? p.summaryIndex
+          : 0;
+      summary[index] = (summary[index] ?? "") + delta;
       this.putItem({ ...item, summary });
     } else if (method === "item/fileChange/patchUpdated") {
-      const item = this.items.get(p.itemId) ?? {
-        id: p.itemId,
+      const item = this.items.get(itemId) ?? {
+        id: itemId,
         type: "fileChange",
       };
       this.putItem({ ...item, changes: p.changes });
     } else if (method === "item/mcpToolCall/progress") {
-      const item = this.items.get(p.itemId);
+      const item = this.items.get(itemId);
       if (item) this.putItem({ ...item, progress: p.message });
     } else if (method === "turn/diff/updated")
       this.putItem({
-        id: `diff-${p.turnId}`,
+        id: `diff-${jsonText(p.turnId)}`,
         type: "diff",
         text: p.diff,
         diff: p.diff,
       });
     else if (method === "turn/plan/updated")
       this.putItem({
-        id: `plan-${p.turnId}`,
+        id: `plan-${jsonText(p.turnId)}`,
         type: "plan",
         text: [
-          p.explanation,
-          ...(p.plan ?? []).map(
-            (s: Json) =>
-              `- [${s.status === "completed" ? "x" : " "}] ${s.step} (${s.status})`,
+          jsonText(p.explanation),
+          ...(Array.isArray(p.plan) ? p.plan.map(jsonRecord) : []).map(
+            (s) =>
+              `- [${s.status === "completed" ? "x" : " "}] ${jsonText(s.step)} (${jsonText(s.status)})`,
           ),
         ]
           .filter(Boolean)
           .join("\n"),
       });
-    else if (method === "thread/name/updated" && p.threadName)
+    else if (
+      method === "thread/name/updated" &&
+      typeof p.threadName === "string" &&
+      p.threadName
+    )
       this.title.setText(p.threadName);
     else if (method === "error")
       this.status.setText(
-        p.error?.message ??
-          p.message ??
+        jsonText(jsonRecord(p.error).message) ||
+          jsonText(p.message) ||
           `${this.plugin.providerLabel} reported an error`,
       );
     else if (method === "thread/tokenUsage/updated") {
-      const info = p.tokenUsage?.last;
-      if (info)
+      const info = jsonRecord(jsonRecord(p.tokenUsage).last);
+      if (typeof info.totalTokens === "number")
         this.status.setText(
-          `Tokens this turn: ${(info.totalTokens ?? 0).toLocaleString()} · ${this.turnId ? "Working" : "Ready"}`,
+          `Tokens this turn: ${info.totalTokens.toLocaleString()} · ${this.turnId ? "Working" : "Ready"}`,
         );
     } else if (method === "serverRequest/resolved") {
       this.pending = this.pending.filter((m) => m.id !== p.requestId);
@@ -2614,8 +2878,19 @@ class CodexView extends ItemView {
         this.requestModal.cancelWithoutResponse();
     }
   }
-  private onRequest(message: Json) {
-    if (message.params?.threadId && message.params.threadId !== this.threadId) {
+  private onRequest(value: unknown) {
+    const raw = jsonRecord(value);
+    if (
+      (typeof raw.id !== "string" && typeof raw.id !== "number") ||
+      typeof raw.method !== "string"
+    )
+      return;
+    const message: ClientRequest = {
+      id: raw.id,
+      method: raw.method,
+      params: jsonRecord(raw.params),
+    };
+    if (message.params.threadId && message.params.threadId !== this.threadId) {
       this.plugin.client.rejectRequest(
         message.id,
         "This thread is not open in the Obsidian panel",
@@ -2801,7 +3076,11 @@ class CodexView extends ItemView {
                 cwd: this.plugin.cwd(),
                 ...threadPolicy(this.plugin.settings.access),
               });
-              id = r.thread.id;
+              id = jsonText(jsonRecord(jsonRecord(r).thread).id);
+              if (!id)
+                throw new Error(
+                  "Provider returned an invalid conversation ID.",
+                );
             } finally {
               this.operation = false;
               this.updateBusy();
@@ -2938,18 +3217,21 @@ class CodexView extends ItemView {
           ...threadPolicy(this.plugin.settings.access),
         });
         this.turns.beginReview();
-        const r = await this.plugin.client.request("review/start", {
-          threadId: this.threadId,
-          target: { type: "uncommittedChanges" },
-          delivery: "inline",
-          ...(this.plugin.settings.provider === "claude"
-            ? {
-                model: this.plugin.settings.model,
-                effort: this.plugin.settings.effort,
-              }
-            : {}),
-        });
-        this.turns.accept(r.turn?.id);
+        const response: unknown = await this.plugin.client.request(
+          "review/start",
+          {
+            threadId: this.threadId,
+            target: { type: "uncommittedChanges" },
+            delivery: "inline",
+            ...(this.plugin.settings.provider === "claude"
+              ? {
+                  model: this.plugin.settings.model,
+                  effort: this.plugin.settings.effort,
+                }
+              : {}),
+          },
+        );
+        this.turns.accept(jsonText(jsonRecord(jsonRecord(response).turn).id));
       } finally {
         this.starting = false;
         this.updateBusy();
@@ -2975,22 +3257,29 @@ class CodexView extends ItemView {
   }
   private async conversationItems() {
     if (!this.paginated || !this.threadId) return [...this.items.values()];
-    const turns: Json[] = [];
+    const turns: Record<string, unknown>[] = [];
     let cursor: string | null = null;
     do {
-      const page: Json = await this.plugin.client.request("thread/turns/list", {
-        threadId: this.threadId,
-        cursor,
-        limit: 100,
-        sortDirection: "desc",
-        itemsView: "full",
-      });
-      turns.push(...page.data);
-      cursor = page.nextCursor;
+      const response: unknown = await this.plugin.client.request(
+        "thread/turns/list",
+        {
+          threadId: this.threadId,
+          cursor,
+          limit: 100,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+      );
+      const page = jsonRecord(response);
+      if (Array.isArray(page.data)) turns.push(...page.data.map(jsonRecord));
+      cursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
     } while (cursor);
-    const items = new Map<string, Json>();
+    const items = new Map<string, ChatItem>();
     for (const t of turns.reverse())
-      for (const item of t.items ?? []) items.set(item.id, item);
+      for (const value of Array.isArray(t.items) ? t.items : []) {
+        const item = chatItem(value);
+        if (item) items.set(item.id, item);
+      }
     for (const item of this.items.values()) items.set(item.id, item);
     return [...items.values()];
   }

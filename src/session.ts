@@ -1,4 +1,3 @@
-import type { Json } from "./protocol";
 export interface Attachment {
   selection?: boolean;
   label: string;
@@ -49,7 +48,13 @@ export class TurnState {
       this.completed.delete(this.completed.values().next().value!);
   }
 }
-export function buildInput(prompt: string, attachments: Attachment[]): Json[] {
+export function buildInput(
+  prompt: string,
+  attachments: Attachment[],
+): [
+  { type: "text"; text: string; text_elements: never[] },
+  ...{ type: "localImage"; path: string }[],
+] {
   const text = [
     prompt,
     ...(attachments.some((a) => a.text)
@@ -66,9 +71,9 @@ export function buildInput(prompt: string, attachments: Attachment[]): Json[] {
   ].join("\n");
   return [
     { type: "text", text, text_elements: [] },
-    ...attachments
-      .filter((a) => a.imagePath)
-      .map((a) => ({ type: "localImage", path: a.imagePath })),
+    ...attachments.flatMap((a) =>
+      a.imagePath ? [{ type: "localImage" as const, path: a.imagePath }] : [],
+    ),
   ];
 }
 /** Separate explicitly attached snapshots from the user's request for compact transcript display. */

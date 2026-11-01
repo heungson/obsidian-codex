@@ -39,8 +39,7 @@ export class ComposerPopover {
   ) {
     this.document = anchor.ownerDocument;
     this.window = this.document.defaultView;
-    this.content = this.document.createElement("div");
-    this.content.className = "codex-composer-popover";
+    this.content = this.document.body.createDiv({ cls: "codex-composer-popover" });
     this.content.id = `codex-picker-${nextPickerId++}`;
     this.content.setAttribute("role", "dialog");
     this.content.setAttribute("aria-label", label);
@@ -48,7 +47,6 @@ export class ComposerPopover {
     anchor.setAttribute("aria-haspopup", "dialog");
     anchor.setAttribute("aria-controls", this.content.id);
     anchor.setAttribute("aria-expanded", "true");
-    this.document.body.append(this.content);
     this.document.addEventListener("pointerdown", this.pointer, true);
     this.document.addEventListener("focusin", this.focus, true);
     this.document.addEventListener("keydown", this.key, true);

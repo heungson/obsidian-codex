@@ -122,7 +122,7 @@ async function setup() {
   );
   await client.connect();
   const started = await client.request("thread/start");
-  return { ...r, client, id: started.thread.id };
+  return { ...r, client, id: (started.thread as { id: string }).id };
 }
 async function run(
   h: Awaited<ReturnType<typeof setup>>,
@@ -135,7 +135,10 @@ async function run(
     effort: "high",
     ...turnPolicy(access, process.cwd()),
   });
-  return { query: h.queries.at(-1)!, turn: response.turn.id };
+  return {
+    query: h.queries.at(-1)!,
+    turn: (response.turn as { id: string }).id,
+  };
 }
 test("Claude adapter streams text, closes completed query promptly, preserves exact installed CLI and setting sources", async (t) => {
   const h = await setup();
@@ -303,19 +306,35 @@ test("Claude session list/resume/fork and vault-local archive filter use officia
   const h = await setup();
   t.after(() => h.client.disconnect());
   const read = await h.client.request("thread/resume", { threadId: "stored" });
-  assert.match(JSON.stringify(read.thread.turns), /Earlier answer/);
+  assert.match(
+    JSON.stringify((read.thread as { turns: unknown }).turns),
+    /Earlier answer/,
+  );
   assert.equal(
-    (await h.client.request("thread/fork", { threadId: "stored" })).thread.id,
+    (
+      (await h.client.request("thread/fork", { threadId: "stored" }))
+        .thread as { id: string }
+    ).id,
     "forked",
   );
   await h.client.request("thread/archive", { threadId: "stored" });
-  assert.equal((await h.client.request("thread/list")).data.length, 0);
   assert.equal(
-    (await h.client.request("thread/list", { archived: true })).data[0].id,
+    ((await h.client.request("thread/list")).data as unknown[]).length,
+    0,
+  );
+  assert.equal(
+    (
+      (await h.client.request("thread/list", { archived: true })).data as {
+        id: string;
+      }[]
+    )[0].id,
     "stored",
   );
   await h.client.request("thread/unarchive", { threadId: "stored" });
-  assert.equal((await h.client.request("thread/list")).data.length, 1);
+  assert.equal(
+    ((await h.client.request("thread/list")).data as unknown[]).length,
+    1,
+  );
 });
 test("Claude error result surfaces provider error and still closes query", async (t) => {
   const h = await setup();
@@ -436,9 +455,9 @@ test("session history aggregates distinct per-block UUIDs sharing one API messag
   const response = await h.client.request("thread/resume", {
     threadId: "stored",
   });
-  const answers = response.thread.turns[0].items.filter(
-    (i: any) => i.type === "agentMessage",
-  );
+  const answers = (
+    response.thread as { turns: { items: { type: string; text: string }[] }[] }
+  ).turns[0].items.filter((i: any) => i.type === "agentMessage");
   assert.equal(answers.length, 1);
   assert.equal(answers[0].text, "A\n\nAB");
 });

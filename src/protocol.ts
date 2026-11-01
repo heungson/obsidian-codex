@@ -6,7 +6,7 @@ import { isAbsolute } from "node:path";
 import { resolveCliLaunch } from "./executable";
 export { executableCandidates, findExecutable } from "./executable";
 export type RpcId = string | number;
-export type Json = Record<string, any>;
+export type Json = Record<string, unknown>;
 export class RpcError extends Error {
   constructor(
     message: string,
@@ -22,7 +22,7 @@ export class CodexClient extends EventEmitter {
   private pending = new Map<
     RpcId,
     {
-      resolve: (v: any) => void;
+      resolve: (v: unknown) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -63,7 +63,7 @@ export class CodexClient extends EventEmitter {
       launch.command,
       [...launch.args, "app-server", "--listen", "stdio://"],
       { cwd, env: launch.env, stdio: "pipe", windowsHide: true, shell: false },
-    ) as ChildProcessWithoutNullStreams;
+    );
     this.child = proc;
     proc.stdout.setEncoding("utf8");
     proc.stderr.setEncoding("utf8");
@@ -122,17 +122,22 @@ export class CodexClient extends EventEmitter {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       if (!line.trim()) continue;
-      let message: Json;
+      let decoded: unknown;
       try {
-        message = JSON.parse(line);
+        decoded = JSON.parse(line) as unknown;
       } catch {
         this.emit("protocolWarning", "Ignored malformed app-server output");
         continue;
       }
+      if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+        this.emit(
+          "protocolWarning",
+          "Ignored invalid app-server message shape",
+        );
+        continue;
+      }
+      const message = decoded as Record<string, unknown>;
       if (
-        !message ||
-        typeof message !== "object" ||
-        Array.isArray(message) ||
         (message.method !== undefined && typeof message.method !== "string") ||
         (message.id !== undefined &&
           typeof message.id !== "number" &&
@@ -148,27 +153,35 @@ export class CodexClient extends EventEmitter {
         continue;
       }
       if (message.method && message.params == null) message.params = {};
-      if (message.method) {
+      if (typeof message.method === "string" && message.method) {
         if (message.id !== undefined) this.emit("request", message);
         else this.emit("notification", message.method, message.params ?? {});
-      } else if (message.id !== undefined) {
+      } else if (
+        typeof message.id === "string" ||
+        typeof message.id === "number"
+      ) {
         const pending = this.pending.get(message.id);
         if (!pending) continue;
         clearTimeout(pending.timer);
         this.pending.delete(message.id);
-        if (message.error)
+        if (message.error) {
+          const error = objectValue(message.error);
           pending.reject(
             new RpcError(
-              message.error.message,
-              message.error.code,
-              message.error.data,
+              textValue(error.message, "Unknown app-server error"),
+              typeof error.code === "number" ? error.code : undefined,
+              error.data,
             ),
           );
-        else pending.resolve(message.result);
+        } else pending.resolve(message.result);
       }
     }
   }
-  request(method: string, params: Json = {}, timeout = 60000): Promise<any> {
+  request(
+    method: string,
+    params: Json = {},
+    timeout = 60000,
+  ): Promise<unknown> {
     if (!this.child || this.child.killed)
       return Promise.reject(new Error("Codex is disconnected. Use Reconnect."));
     const id = this.nextId++;
@@ -264,26 +277,42 @@ export function turnPolicy(mode: AccessMode, cwd: string) {
           : { type: "readOnly", networkAccess: false },
   };
 }
-export function itemText(item: Json): string {
+function objectValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+function textValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+export function itemText(item: Record<string, unknown>): string {
   switch (item.type) {
     case "diff":
-      return item.diff ?? item.text ?? "";
+      return textValue(item.diff, textValue(item.text));
     case "agentMessage":
     case "plan":
-      return item.text ?? "";
+      return textValue(item.text);
     case "userMessage":
-      return (item.content ?? [])
-        .map((c: Json) => c.text ?? c.path ?? `[${c.type}]`)
+      return (Array.isArray(item.content) ? item.content : [])
+        .map((value: unknown) => {
+          const c = objectValue(value);
+          return textValue(c.text, textValue(c.path, `[${textValue(c.type)}]`));
+        })
         .join("\n");
     case "reasoning":
-      return (item.summary ?? []).join("\n");
+      return (Array.isArray(item.summary) ? item.summary : [])
+        .filter((value: unknown): value is string => typeof value === "string")
+        .join("\n");
     case "commandExecution":
-      return `$ ${item.command}\n${item.aggregatedOutput ?? ""}${item.exitCode != null ? `\nExit ${item.exitCode}` : ""}`;
+      return `$ ${textValue(item.command)}\n${textValue(item.aggregatedOutput)}${typeof item.exitCode === "number" ? `\nExit ${item.exitCode}` : ""}`;
     case "fileChange":
-      return (item.changes ?? [])
-        .map((c: Json) => `${c.path}\n${c.diff ?? JSON.stringify(c.kind)}`)
+      return (Array.isArray(item.changes) ? item.changes : [])
+        .map((value: unknown) => {
+          const c = objectValue(value);
+          return `${textValue(c.path)}\n${textValue(c.diff, JSON.stringify(c.kind))}`;
+        })
         .join("\n\n");
     default:
-      return JSON.stringify(item, null, 2);
+      return JSON.stringify(item, null, 2) ?? "";
   }
 }

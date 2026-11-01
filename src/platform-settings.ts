@@ -42,7 +42,7 @@ export function loadPlatformPaths(
     // override means CLI auto-discovery / the current vault, never a foreign path.
     for (const field of fields) {
       const value =
-        typeof saved[field] === "string" ? saved[field]!.trim() : "";
+        typeof saved[field] === "string" ? saved[field].trim() : "";
       if (!value) continue;
       const owner = pathPlatform(value, platform);
       (platformPaths[owner] ??= emptyPaths())[field] = value;

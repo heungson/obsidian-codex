@@ -16,6 +16,7 @@ import type {
   Options,
   PermissionResult,
   Query,
+  SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Json, RpcId, AccessMode } from "./protocol";
@@ -29,6 +30,66 @@ export type ClaudeRuntime = Pick<
   | "renameSession"
   | "forkSession"
 >;
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+function text(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+type TranscriptItem = Record<string, unknown> & { id: string; type: string };
+interface ProviderParams {
+  threadId: string;
+  turnId: string;
+  name: string;
+  searchTerm: string;
+  archived: boolean;
+  excludeTurns: boolean;
+  cursor: string | number | undefined;
+  limit: number;
+  input: Record<string, unknown>[];
+  model: string;
+  effort: Options["effort"];
+  claudeAccess: AccessMode | undefined;
+  sandboxPolicy: Record<string, unknown>;
+  collaborationMode: Record<string, unknown>;
+}
+function providerParams(value: unknown): ProviderParams {
+  const p = record(value);
+  const effort = p.effort;
+  const access = p.claudeAccess;
+  return {
+    threadId: text(p.threadId),
+    turnId: text(p.turnId),
+    name: text(p.name),
+    searchTerm: text(p.searchTerm),
+    archived: p.archived === true,
+    excludeTurns: p.excludeTurns === true,
+    cursor:
+      typeof p.cursor === "string" || typeof p.cursor === "number"
+        ? p.cursor
+        : undefined,
+    limit:
+      typeof p.limit === "number" && Number.isFinite(p.limit) ? p.limit : 40,
+    input: Array.isArray(p.input) ? p.input.map(record) : [],
+    model: text(p.model),
+    effort:
+      effort === "low" ||
+      effort === "medium" ||
+      effort === "high" ||
+      effort === "xhigh" ||
+      effort === "max"
+        ? effort
+        : undefined,
+    claudeAccess:
+      access === "read-only" || access === "agent" || access === "full-access"
+        ? access
+        : undefined,
+    sandboxPolicy: record(p.sandboxPolicy),
+    collaborationMode: record(p.collaborationMode),
+  };
+}
 /** Match the SDK spawn contract while launching npm JS entries with an actual Node runtime. */
 export function claudeExecutableOptions(
   executable: string,
@@ -70,8 +131,8 @@ export function claudeExecutableOptions(
             const event = (name: "exit" | "error") =>
               name === "exit" ? "close" : name;
             return {
-              stdin: child.stdin!,
-              stdout: child.stdout!,
+              stdin: child.stdin,
+              stdout: child.stdout,
               get killed() {
                 return child.killed;
               },
@@ -173,7 +234,7 @@ interface Run {
   query: Query;
   queue: InputQueue;
   generation: number;
-  items: Map<string, Json>;
+  items: Map<string, TranscriptItem>;
   messageId: string;
   blocks: Map<number, Json>;
   textParts: Map<string, Map<string, string>>;
@@ -185,7 +246,7 @@ interface Pending {
   run: Run;
   finish: (result: PermissionResult) => void;
   input: Record<string, unknown>;
-  questions?: Json[];
+  questions?: Record<string, unknown>[];
 }
 export class ClaudeClient extends EventEmitter {
   readonly provider = "claude";
@@ -309,7 +370,12 @@ export class ClaudeClient extends EventEmitter {
       nodeClearTimeout(timer);
     }
   }
-  async request(method: string, p: Json = {}, _timeout?: number): Promise<any> {
+  async request(
+    method: string,
+    params: Record<string, unknown> = {},
+    _timeout?: number,
+  ): Promise<Json> {
+    const p = providerParams(params);
     await this.connect();
     const sdk = this.sdk!;
     switch (method) {
@@ -475,6 +541,7 @@ export class ClaudeClient extends EventEmitter {
         );
       case "review/start":
         return this.start({
+          ...p,
           threadId: p.threadId,
           input: [
             { type: "text", text: await claudeReviewSnapshot(this.cwd()) },
@@ -493,7 +560,9 @@ export class ClaudeClient extends EventEmitter {
         );
     }
   }
-  private sessionThread(s: Json) {
+  private sessionThread(
+    s: Awaited<ReturnType<ClaudeRuntime["listSessions"]>>[number],
+  ) {
     return {
       id: s.sessionId,
       name:
@@ -505,42 +574,55 @@ export class ClaudeClient extends EventEmitter {
       historyMode: "legacy",
     };
   }
-  private historyItems(messages: Json[]) {
-    const items = new Map<string, Json>();
+  private historyItems(
+    messages: Awaited<ReturnType<ClaudeRuntime["getSessionMessages"]>>,
+  ) {
+    const items = new Map<string, TranscriptItem>();
     const seenText = new Set<string>();
     for (const msg of messages) {
       if (msg.parent_tool_use_id) continue;
-      const content =
-        typeof msg.message?.content === "string"
-          ? [{ type: "text", text: msg.message.content }]
-          : (msg.message?.content ?? []);
+      const message = record(msg.message);
+      const content: unknown[] =
+        typeof message.content === "string"
+          ? [{ type: "text", text: message.content }]
+          : Array.isArray(message.content)
+            ? message.content
+            : [];
       if (msg.type === "user") {
-        const text = content
-          .filter((b: Json) => b.type === "text")
-          .map((b: Json) => b.text)
+        const promptText = content
+          .map(record)
+          .filter((b) => b.type === "text")
+          .map((b) => text(b.text))
           .join("\n");
-        if (text)
+        if (promptText)
           items.set(msg.uuid, {
             id: msg.uuid,
             type: "userMessage",
-            content: [{ type: "text", text }],
+            content: [{ type: "text", text: promptText }],
           });
       }
-      for (const [index, block] of content.entries()) {
+      for (const [index, value] of content.entries()) {
+        const block = record(value);
         if (msg.type === "assistant" && block.type === "text") {
           const key = `${msg.uuid}:${index}`;
           if (seenText.has(key)) continue;
           seenText.add(key);
-          const id = `${msg.message?.id ?? msg.uuid}:text`;
+          const id = `${text(message.id, msg.uuid)}:text`;
           const previous = items.get(id)?.text;
           items.set(id, {
             id,
             type: "agentMessage",
-            text: previous ? previous + "\n\n" + block.text : block.text,
+            text:
+              typeof previous === "string" && previous
+                ? previous + "\n\n" + text(block.text)
+                : text(block.text),
           });
-        } else if (block.type === "tool_use")
+        } else if (block.type === "tool_use" && typeof block.id === "string")
           items.set(block.id, this.toolItem(block));
-        else if (block.type === "tool_result") {
+        else if (
+          block.type === "tool_result" &&
+          typeof block.tool_use_id === "string"
+        ) {
           const old = items.get(block.tool_use_id);
           if (old) items.set(old.id, this.resultItem(old, block));
         }
@@ -548,7 +630,7 @@ export class ClaudeClient extends EventEmitter {
     }
     return [...items.values()];
   }
-  private access(p: Json): AccessMode {
+  private access(p: ProviderParams): AccessMode {
     return (
       p.claudeAccess ??
       (p.sandboxPolicy?.type === "dangerFullAccess"
@@ -558,7 +640,7 @@ export class ClaudeClient extends EventEmitter {
           : "read-only")
     );
   }
-  private async start(p: Json) {
+  private async start(p: ProviderParams) {
     this.assertIdle();
     const attempt = Symbol("Claude start");
     const generation = this.generation;
@@ -566,16 +648,26 @@ export class ClaudeClient extends EventEmitter {
     try {
       if (!p.threadId || p.threadId !== this.threadId)
         throw new Error("Open this Claude session before sending.");
-      const content: Json[] = [];
+      const content: Exclude<
+        Extract<SDKUserMessage["message"], { role: "user" }>["content"],
+        string
+      > = [];
       for (const input of p.input ?? []) {
-        if (input.type === "text")
+        if (input.type === "text") {
+          if (typeof input.text !== "string")
+            throw new Error("Invalid text input");
           content.push({ type: "text", text: input.text });
-        else if (input.type === "localImage") {
+        } else if (input.type === "localImage") {
+          if (typeof input.path !== "string")
+            throw new Error("Invalid image path");
           const data = await readFile(input.path);
           if (data.byteLength > 10 * 1024 * 1024)
             throw new Error("Choose an image smaller than 10 MiB.");
           const ext = extname(input.path).toLowerCase();
-          const mime: Record<string, string> = {
+          const mime: Record<
+            string,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+          > = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -648,7 +740,7 @@ export class ClaudeClient extends EventEmitter {
         uuid: userId,
         session_id: p.threadId,
         parent_tool_use_id: null,
-        message: { role: "user", content: content as any },
+        message: { role: "user", content },
       });
       this.notice("turn/started", {
         threadId: run.threadId,
@@ -665,7 +757,7 @@ export class ClaudeClient extends EventEmitter {
     try {
       for await (const message of run.query) {
         if (run.generation !== this.generation || run.finished) break;
-        this.message(run, message as Json);
+        this.message(run, message);
         if (run.finished) break;
       }
       if (!run.finished)
@@ -690,8 +782,8 @@ export class ClaudeClient extends EventEmitter {
       run.query.close();
     }
   }
-  private message(run: Run, m: Json) {
-    if (m.parent_tool_use_id) return;
+  private message(run: Run, m: SDKMessage) {
+    if ("parent_tool_use_id" in m && m.parent_tool_use_id) return;
     if (m.type === "stream_event") {
       const e = m.event;
       if (e.type === "message_start") {
@@ -718,7 +810,7 @@ export class ClaudeClient extends EventEmitter {
     if (m.type === "assistant") {
       for (const [index, b] of (m.message?.content ?? []).entries()) {
         if (b.type === "text") {
-          const seen = `${m.uuid ?? m.message.id}:${index}:${b.text}`;
+          const seen = `${m.uuid}:${index}:${b.text}`;
           if (run.finalTextSeen.has(seen)) continue;
           run.finalTextSeen.add(seen);
           const messageId = m.message.id ?? m.uuid;
@@ -743,7 +835,7 @@ export class ClaudeClient extends EventEmitter {
       return;
     }
     if (m.type === "user") {
-      for (const b of m.message?.content ?? [])
+      for (const b of Array.isArray(m.message.content) ? m.message.content : [])
         if (b.type === "tool_result") {
           const item = run.items.get(b.tool_use_id);
           if (item) this.item(run, this.resultItem(item, b));
@@ -781,8 +873,11 @@ export class ClaudeClient extends EventEmitter {
           : m.is_error || m.subtype !== "success"
             ? "failed"
             : "completed",
-        m.errors?.join("\n") ??
-          (m.is_error ? String(m.result ?? m.subtype) : undefined),
+        "errors" in m && Array.isArray(m.errors)
+          ? m.errors.join("\n")
+          : m.is_error
+            ? String("result" in m ? m.result : m.subtype)
+            : undefined,
       );
       return;
     }
@@ -810,7 +905,7 @@ export class ClaudeClient extends EventEmitter {
     );
     const previous = run.items.get(id)?.text;
     if (previous === text) return;
-    if (previous !== undefined && text.startsWith(previous)) {
+    if (typeof previous === "string" && text.startsWith(previous)) {
       run.items.set(id, { id, type: "agentMessage", text });
       this.notice("item/agentMessage/delta", {
         threadId: run.threadId,
@@ -820,46 +915,48 @@ export class ClaudeClient extends EventEmitter {
       });
     } else this.item(run, { id, type: "agentMessage", text });
   }
-  private toolItem(block: Json): Json {
-    const input = block.input ?? {};
-    if (block.name === "Bash" || block.name === "PowerShell")
+  private toolItem(value: unknown): TranscriptItem {
+    const block = record(value);
+    const input = record(block.input);
+    const name = text(block.name);
+    const id = text(block.id);
+    if (name === "Bash" || name === "PowerShell")
       return {
-        id: block.id,
+        id,
         type: "commandExecution",
-        command: input.command ?? block.name,
+        command: text(input.command, name),
         cwd: this.cwd(),
         status: "inProgress",
         aggregatedOutput: "",
         exitCode: null,
       };
-    if (["Write", "Edit", "MultiEdit"].includes(block.name))
+    if (["Write", "Edit", "MultiEdit"].includes(name))
       return {
-        id: block.id,
+        id,
         type: "fileChange",
         status: "inProgress",
         changes: [
           {
-            path: input.file_path ?? "Unknown path",
+            path: text(input.file_path, "Unknown path"),
             diff:
-              block.name === "Write"
+              name === "Write"
                 ? String(input.content ?? "")
-                : `${input.old_string ?? ""}\n→\n${input.new_string ?? JSON.stringify(input.edits ?? [])}`,
+                : `${text(input.old_string)}\n→\n${text(input.new_string, JSON.stringify(input.edits ?? []))}`,
             kind: { type: "update" },
           },
         ],
       };
     return {
-      id: block.id,
+      id,
       type: "mcpToolCall",
-      server: block.name?.startsWith("mcp__")
-        ? block.name.split("__")[1]
-        : "Claude Code",
-      tool: block.name,
+      server: name.startsWith("mcp__") ? name.split("__")[1] : "Claude Code",
+      tool: name,
       arguments: input,
       status: "inProgress",
     };
   }
-  private resultItem(old: Json, block: Json) {
+  private resultItem(old: TranscriptItem, value: unknown): TranscriptItem {
+    const block = record(value);
     const text =
       typeof block.content === "string"
         ? block.content
@@ -872,7 +969,7 @@ export class ClaudeClient extends EventEmitter {
         : { result: text }),
     };
   }
-  private item(run: Run, item: Json) {
+  private item(run: Run, item: TranscriptItem) {
     run.items.set(item.id, item);
     this.notice("item/completed", {
       threadId: run.threadId,
@@ -903,7 +1000,9 @@ export class ClaudeClient extends EventEmitter {
         });
       const questions =
         toolName === "AskUserQuestion"
-          ? ((input.questions as Json[]) ?? [])
+          ? Array.isArray(input.questions)
+            ? input.questions.map(record)
+            : []
           : undefined;
       const pending: Pending = {
         run,
@@ -944,14 +1043,20 @@ export class ClaudeClient extends EventEmitter {
       });
     });
   }
-  respond(id: RpcId, result: Json) {
+  respond(id: RpcId, result: Record<string, unknown>) {
     const p = this.pending.get(id);
     if (!p) return;
     if (p.questions) {
       const answers: Record<string, string> = {};
       for (const [index, q] of p.questions.entries()) {
-        const values = result.answers?.[String(index)]?.answers;
-        if (values?.length) answers[q.question] = values.join(", ");
+        const values = record(record(result.answers)[String(index)]).answers;
+        const key = text(q.question);
+        if (key && Array.isArray(values)) {
+          const selected = values.filter(
+            (value: unknown): value is string => typeof value === "string",
+          );
+          if (selected.length) answers[key] = selected.join(", ");
+        }
       }
       if (!Object.keys(answers).length)
         this.resolvePermission(id, {

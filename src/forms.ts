@@ -1,27 +1,46 @@
-import type { Json } from "./protocol";
+type Schema = Record<string, unknown>;
+
+function record(value: unknown): Schema {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Schema)
+    : {};
+}
+function bound(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
 export function enumOptions(
-  schema: Json,
+  schemaValue: unknown,
 ): Array<{ value: string; label: string }> | null {
-  const values = schema.type === "array" ? schema.items : schema;
-  if (values?.enum)
-    return values.enum.map((value: string, index: number) => ({
+  const schema = record(schemaValue);
+  const values = schema.type === "array" ? record(schema.items) : schema;
+  if (Array.isArray(values.enum)) {
+    const names: unknown[] = Array.isArray(values.enumNames)
+      ? values.enumNames
+      : [];
+    return values.enum.flatMap((value: unknown, index: number) => {
+      if (typeof value !== "string") return [];
+      const label = names[index];
+      return [{ value, label: typeof label === "string" ? label : value }];
+    });
+  }
+  const choices = values.oneOf ?? values.anyOf;
+  if (!Array.isArray(choices)) return null;
+  return choices.map((choice: unknown) => {
+    const entry = record(choice);
+    const value = String(entry.const);
+    return {
       value,
-      label: values.enumNames?.[index] ?? value,
-    }));
-  const choices = values?.oneOf ?? values?.anyOf;
-  return choices
-    ? choices.map((entry: Json) => ({
-        value: String(entry.const),
-        label: entry.title ?? String(entry.const),
-      }))
-    : null;
+      label: typeof entry.title === "string" ? entry.title : value,
+    };
+  });
 }
 export function validateFormValue(
   key: string,
-  schema: Json,
+  schemaValue: unknown,
   value: unknown,
   required: boolean,
 ): unknown {
+  const schema = record(schemaValue);
   if (
     value === "" ||
     value === undefined ||
@@ -34,14 +53,13 @@ export function validateFormValue(
   if (schema.type === "array") {
     if (!Array.isArray(value))
       throw new Error(`${key}: choose a list of values`);
-    if (
-      value.length < (schema.minItems ?? 0) ||
-      value.length > (schema.maxItems ?? Infinity)
-    )
+    const min = bound(schema.minItems, 0),
+      max = bound(schema.maxItems, Infinity);
+    if (value.length < min || value.length > max)
       throw new Error(
-        `${key}: choose ${schema.minItems ?? 0}–${schema.maxItems ?? "any"} options`,
+        `${key}: choose ${min}–${Number.isFinite(max) ? max : "any"} options`,
       );
-    if (value.some((v) => !options?.some((o) => o.value === v)))
+    if (value.some((v: unknown) => !options?.some((o) => o.value === v)))
       throw new Error(`${key}: invalid option`);
     return value;
   }
@@ -53,8 +71,8 @@ export function validateFormValue(
     )
       throw new Error(`${key}: enter a valid ${schema.type}`);
     if (
-      number < (schema.minimum ?? -Infinity) ||
-      number > (schema.maximum ?? Infinity)
+      number < bound(schema.minimum, -Infinity) ||
+      number > bound(schema.maximum, Infinity)
     )
       throw new Error(`${key}: value is outside the allowed range`);
     return number;
@@ -64,8 +82,8 @@ export function validateFormValue(
   if (options && !options.some((o) => o.value === text))
     throw new Error(`${key}: invalid option`);
   if (
-    text.length < (schema.minLength ?? 0) ||
-    text.length > (schema.maxLength ?? Infinity)
+    text.length < bound(schema.minLength, 0) ||
+    text.length > bound(schema.maxLength, Infinity)
   )
     throw new Error(`${key}: text length is outside the allowed range`);
   return text;

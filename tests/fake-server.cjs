@@ -36,6 +36,9 @@ rl.on("line", (line) => {
         error: { code: 123, message: "Rejected", data: { hint: "fix" } },
       });
       break;
+    case "malformedError":
+      send({ id: m.id, error: { code: "bad", message: { unexpected: true } } });
+      break;
     case "stream":
       process.stdout.write('not json\nnull\n[]\n42\n{"method":42}\n');
       const data =

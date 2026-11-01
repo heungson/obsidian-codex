@@ -35,8 +35,8 @@ test("initializes before requests; concurrent out-of-order responses correlate b
     c.request("echo", { value: "slow", delay: 30 }),
     c.request("echo", { value: "fast" }),
   ]);
-  assert.equal(results[0].value, "slow");
-  assert.equal(results[1].value, "fast");
+  assert.equal((results[0] as { value: string }).value, "slow");
+  assert.equal((results[1] as { value: string }).value, "fast");
   assert.equal(c.ready, true);
 });
 test("stream handles partial Unicode JSONL and ignores malformed frame", async (t) => {
@@ -72,6 +72,18 @@ test("RPC errors retain code and data", async (t) => {
       e instanceof RpcError && e.code === 123 && (e.data as any).hint === "fix",
   );
 });
+test("malformed RPC errors are converted to a safe error", async (t) => {
+  const c = client();
+  t.after(() => c.disconnect());
+  await c.connect();
+  await assert.rejects(
+    c.request("malformedError"),
+    (error: unknown) =>
+      error instanceof RpcError &&
+      error.message === "Unknown app-server error" &&
+      error.code === undefined,
+  );
+});
 test("request timeout removes pending work and keeps connection usable", async (t) => {
   const c = client();
   t.after(() => c.disconnect());
@@ -87,7 +99,10 @@ test("disconnect rejects pending requests and reconnect starts clean process", a
   c.disconnect();
   await pending;
   await c.connect();
-  assert.equal((await c.request("echo", { ok: true })).ok, true);
+  assert.equal(
+    ((await c.request("echo", { ok: true })) as { ok: boolean }).ok,
+    true,
+  );
 });
 test("disconnect during initialization does not poison immediate reconnect", async (t) => {
   const c = client(60);
@@ -203,6 +218,20 @@ test("attached context collapses independently of user prompt without changing s
 });
 
 import { enumOptions, validateFormValue } from "../src/forms";
+test("malformed provider schemas and transcript values do not throw", () => {
+  assert.equal(enumOptions(null), null);
+  assert.deepEqual(enumOptions({ enum: [false, "b"], enumNames: ["A", "B"] }), [
+    { value: "b", label: "B" },
+  ]);
+  assert.equal(itemText({ type: "agentMessage", text: { invalid: true } }), "");
+  assert.equal(
+    itemText({
+      type: "userMessage",
+      content: [null, { type: "text", text: "ok" }],
+    }),
+    "[]\nok",
+  );
+});
 test("MCP typed form values validate ranges and preserve boolean false", () => {
   assert.equal(
     validateFormValue("enabled", { type: "boolean" }, false, true),
